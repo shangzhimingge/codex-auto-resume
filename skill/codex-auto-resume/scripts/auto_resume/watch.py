@@ -1,0 +1,104 @@
+import time
+from pathlib import Path
+
+from .checkpoints import read_checkpoint
+from .limits import LimitsError, read_limits, reset_deadline
+from .repo import fingerprint, repo_matches
+from .resume import ResumeError, resume_thread
+from .state import FileLock, load_json, save_job
+
+RESUME_PROMPT = """读取自动续作检查点：{checkpoint}
+继续完成原始目标：{goal}
+先核对 git status、git diff、测试状态和检查点，只从 NEXT_ACTION 开始。
+不要重复 COMPLETED 或 DO_NOT_REPEAT 中的工作。每个关键里程碑后更新检查点。
+完整目标满足且最终验证通过后，将 AUTO_RESUME_STATUS 写为 DONE。"""
+
+
+def decide_action(job, repo_ok, exhausted):
+    if job["status"] == "DONE":
+        return "done"
+    if job["completed_cycles"] >= job["max_cycles"]:
+        return "max_cycles"
+    if not repo_ok:
+        return "needs_user"
+    return "wait" if exhausted else "resume"
+
+
+def _set(job_path, job, status, error=None):
+    job["status"] = status
+    job["last_error"] = error
+    save_job(job_path, job)
+
+
+def _checkpoint_done(job):
+    try:
+        return read_checkpoint(job["checkpoint_path"])["AUTO_RESUME_STATUS"].strip().upper() == "DONE"
+    except OSError:
+        return False
+
+
+def _settled(project, delay=2):
+    first = fingerprint(project)
+    time.sleep(delay)
+    second = fingerprint(project)
+    return second if first == second else None
+
+
+def run_job(job_path, codex_command=("codex",), sleep=time.sleep, now=time.time, once=False):
+    job_path = Path(job_path).resolve()
+    with FileLock(job_path.with_suffix(".lock")):
+        while True:
+            job = load_json(job_path)
+            if _checkpoint_done(job):
+                _set(job_path, job, "DONE")
+                return "DONE"
+            if job["status"] in {"DONE", "NEEDS_USER", "MAX_CYCLES", "ERROR"}:
+                return job["status"]
+            if job["completed_cycles"] >= job["max_cycles"]:
+                _set(job_path, job, "MAX_CYCLES")
+                return "MAX_CYCLES"
+            try:
+                limits = read_limits(codex_command)
+                job["limit_id"] = limits.limit_id
+                deadline = reset_deadline(limits, now())
+            except LimitsError as exc:
+                _set(job_path, job, "ERROR", str(exc))
+                return "ERROR"
+            if deadline is not None:
+                _set(job_path, job, "WAITING_RESET")
+                wait = max(job["poll_interval_seconds"], deadline + job["safety_margin_seconds"] - now())
+                if once:
+                    return "WAITING_RESET"
+                sleep(wait)
+                continue
+            if job["status"] != "WAITING_RESET":
+                _set(job_path, job, "RUNNING")
+                if once:
+                    return "RUNNING"
+                sleep(job["poll_interval_seconds"])
+                continue
+            project = Path(job["project_root"])
+            settled = _settled(project)
+            if settled is None or not repo_matches(project, job["expected_repo_snapshot"]):
+                _set(job_path, job, "NEEDS_USER", "repository changed since the last checkpoint")
+                return "NEEDS_USER"
+            _set(job_path, job, "RESUMING")
+            prompt = RESUME_PROMPT.format(checkpoint=job["checkpoint_path"], goal=job["original_goal"])
+            try:
+                result = resume_thread(codex_command, job["thread_id"], prompt, project)
+            except (ResumeError, OSError) as exc:
+                _set(job_path, job, "NEEDS_USER", str(exc))
+                return "NEEDS_USER"
+            job = load_json(job_path)
+            job["completed_cycles"] += 1
+            job["expected_repo_snapshot"] = fingerprint(project)
+            if _checkpoint_done(job):
+                _set(job_path, job, "DONE")
+                return "DONE"
+            if job["completed_cycles"] >= job["max_cycles"]:
+                _set(job_path, job, "MAX_CYCLES")
+                return "MAX_CYCLES"
+            _set(job_path, job, "RUNNING")
+            if once:
+                return "RUNNING"
+            sleep(job["poll_interval_seconds"])

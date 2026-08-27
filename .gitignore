@@ -1,0 +1,10 @@
+.task-evidence/
+__pycache__/
+*.py[cod]
+.coverage
+.pytest_cache/
+.venv/
+dist/
+build/
+.env
+.env.*

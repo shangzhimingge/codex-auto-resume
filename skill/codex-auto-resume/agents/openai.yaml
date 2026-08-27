@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex 自动续作"
+  short_description: "用量窗口重置后从精确线程与检查点自动安全地继续长期任务"
+  default_prompt: "为此长任务注册自动续作，并在每个关键里程碑维护检查点。"
