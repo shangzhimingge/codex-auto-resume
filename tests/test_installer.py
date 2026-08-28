@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -12,11 +13,18 @@ END = "<!-- END CODEX-AUTO-RESUME MANAGED BLOCK -->"
 
 class InstallerTests(unittest.TestCase):
     def run_installer(self, home, *extra):
+        powershell = (
+            shutil.which("pwsh")
+            or shutil.which("powershell.exe")
+            or shutil.which("powershell")
+        )
+        if powershell is None:
+            self.skipTest("PowerShell is not available on this runner")
         env = os.environ.copy()
         env["CODEX_AUTO_RESUME_SIMULATE"] = "1"
         env["CODEX_AUTO_RESUME_SKIP_PREREQUISITES"] = "1"
         return subprocess.run(
-            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(INSTALLER),
+            [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(INSTALLER),
              "-CodexHome", str(home), *extra], cwd=ROOT, text=True, encoding="utf-8",
             errors="replace", capture_output=True, shell=False, env=env,
         )

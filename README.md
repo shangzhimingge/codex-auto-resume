@@ -1,5 +1,7 @@
 # Codex Auto Resume
 
+[![CI](https://github.com/shangzhimingge/codex-auto-resume/actions/workflows/ci.yml/badge.svg)](https://github.com/shangzhimingge/codex-auto-resume/actions/workflows/ci.yml)
+
 > **Resume long-running Codex tasks safely after ChatGPT usage-window resets.**
 
 [简体中文](./README.zh-CN.md)

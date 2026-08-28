@@ -1,5 +1,7 @@
 # Codex 自动续作
 
+[![CI](https://github.com/shangzhimingge/codex-auto-resume/actions/workflows/ci.yml/badge.svg)](https://github.com/shangzhimingge/codex-auto-resume/actions/workflows/ci.yml)
+
 > **在 ChatGPT 用量窗口重置后，安全地继续长时间运行的 Codex 任务。**
 
 [English](./README.md)
