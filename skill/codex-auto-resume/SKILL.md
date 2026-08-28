@@ -7,13 +7,27 @@ description: Preserve and automatically resume long-running Codex coding tasks a
 
 仅在用户明确启用自动续作时注册任务。运行环境只使用 Python 标准库。
 
+## 初始化路径
+
+区分两个目录：`PROJECT` 是需要继续工作的目标 Git 仓库；`SKILL_ROOT` 是已安装 Skill 中 `SKILL.md` 所在目录。允许从任意当前工作目录执行命令。先在 PowerShell 中设置：
+
+```powershell
+$CODEX_ROOT = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME ".codex" }
+$SKILL_ROOT = Split-Path -Parent (Resolve-Path (Join-Path $CODEX_ROOT "skills\codex-auto-resume\SKILL.md"))
+$THREAD_ID = "<UUID>"
+$PROJECT = (Resolve-Path "<TARGET_GIT_PROJECT>").Path
+$ORIGINAL_GOAL = "<ORIGINAL_GOAL>"
+```
+
+始终引用 `$SKILL_ROOT` 下的脚本，并用双引号包围脚本路径、目标路径、目标文本和任务 ID。
+
 ## 注册
 
 1. 获取当前线程的精确 UUID、项目 Git 根目录和原始目标。
-2. 在项目根目录执行：
+2. 在任意目录执行：
 
 ```powershell
-python scripts/register.py --thread-id <UUID> --project <PROJECT_ROOT> --goal <ORIGINAL_GOAL>
+python "$SKILL_ROOT\scripts\register.py" --thread-id "$THREAD_ID" --project "$PROJECT" --goal "$ORIGINAL_GOAL"
 ```
 
 3. 保存命令返回的 `job_id`。让本地 Windows 守护进程在后台等待真实用量窗口重置。
@@ -25,7 +39,7 @@ python scripts/register.py --thread-id <UUID> --project <PROJECT_ROOT> --goal <O
 在每个关键里程碑后，以及长构建、大型测试、迁移和批量编辑前，执行：
 
 ```powershell
-python scripts/checkpoint.py --job-id <JOB_ID> `
+python "$SKILL_ROOT\scripts\checkpoint.py" --job-id "$JOB_ID" `
   --set "COMPLETED=<COMPLETED>" `
   --set "CURRENT_STATE=<CURRENT_STATE>" `
   --set "FILES_CHANGED=<FILES_CHANGED>" `
@@ -41,14 +55,14 @@ python scripts/checkpoint.py --job-id <JOB_ID> `
 完整目标满足且最终验证通过后，执行：
 
 ```powershell
-python scripts/checkpoint.py --job-id <JOB_ID> --set "AUTO_RESUME_STATUS=DONE"
+python "$SKILL_ROOT\scripts\checkpoint.py" --job-id "$JOB_ID" --set "AUTO_RESUME_STATUS=DONE"
 ```
 
 ## 查看状态与诊断
 
 ```powershell
-python scripts/watchdog.py status --job <JOB_ID>
-python scripts/watchdog.py probe-limits
+python "$SKILL_ROOT\scripts\watchdog.py" status --job "$JOB_ID"
+python "$SKILL_ROOT\scripts\watchdog.py" probe-limits
 ```
 
 守护进程严格执行 app-server 的 `initialize` → `initialized` → `account/rateLimits/read` 握手，优先读取 `rateLimitsByLimitId.codex`，并同时判断 primary 与 secondary 窗口。额度数据缺失或畸形时按关闭状态处理。
