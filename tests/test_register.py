@@ -45,6 +45,14 @@ class RegisterTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 register_job("bad", Path(tmp), "目标", Path(tmp) / "home", start_watchdog=False)
 
+    def test_register_rejects_uppercase_uuid_exactly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "project"
+            project.mkdir()
+            self.make_repo(project)
+            with self.assertRaises(ValueError):
+                register_job(str(uuid.uuid4()).upper(), project, "目标", Path(tmp) / "home", start_watchdog=False)
+
     def test_start_watchdog_detaches_run_command_and_saves_pid(self):
         with tempfile.TemporaryDirectory() as tmp:
             job_path = Path(tmp) / "job.json"

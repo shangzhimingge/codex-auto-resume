@@ -4,7 +4,7 @@ from pathlib import Path
 from .checkpoints import read_checkpoint
 from .limits import LimitsError, read_limits, reset_deadline
 from .repo import fingerprint, repo_matches
-from .resume import ResumeError, resume_thread
+from .resume import ResumeError, ResumeInterrupted, resume_thread
 from .state import FileLock, load_json, save_job
 
 RESUME_PROMPT = """读取自动续作检查点：{checkpoint}
@@ -44,6 +44,20 @@ def _settled(project, delay=2):
     return second if first == second else None
 
 
+def _next_wait(deadline, now, poll_interval, safety_margin):
+    if deadline <= now:
+        return min(float(poll_interval), 1.0)
+    return min(float(poll_interval), max(1.0, deadline + safety_margin - now))
+
+
+def _usage_guard(codex_command, now):
+    try:
+        snapshot = read_limits(codex_command)
+        return "limit_exhausted" if reset_deadline(snapshot, now()) is not None else None
+    except LimitsError as exc:
+        return f"limits_error:{exc}"
+
+
 def run_job(job_path, codex_command=("codex",), sleep=time.sleep, now=time.time, once=False):
     job_path = Path(job_path).resolve()
     with FileLock(job_path.with_suffix(".lock")):
@@ -66,7 +80,7 @@ def run_job(job_path, codex_command=("codex",), sleep=time.sleep, now=time.time,
                 return "ERROR"
             if deadline is not None:
                 _set(job_path, job, "WAITING_RESET")
-                wait = max(job["poll_interval_seconds"], deadline + job["safety_margin_seconds"] - now())
+                wait = _next_wait(deadline, now(), job["poll_interval_seconds"], job["safety_margin_seconds"])
                 if once:
                     return "WAITING_RESET"
                 sleep(wait)
@@ -85,7 +99,26 @@ def run_job(job_path, codex_command=("codex",), sleep=time.sleep, now=time.time,
             _set(job_path, job, "RESUMING")
             prompt = RESUME_PROMPT.format(checkpoint=job["checkpoint_path"], goal=job["original_goal"])
             try:
-                result = resume_thread(codex_command, job["thread_id"], prompt, project)
+                resume_thread(
+                    codex_command, job["thread_id"], prompt, project,
+                    supervisor=lambda: _usage_guard(codex_command, now),
+                    supervisor_interval=min(job["poll_interval_seconds"], 10),
+                )
+            except ResumeInterrupted as exc:
+                job = load_json(job_path)
+                if exc.thread_verified:
+                    job["completed_cycles"] += 1
+                    job["expected_repo_snapshot"] = fingerprint(project)
+                if exc.reason == "limit_exhausted":
+                    _set(job_path, job, "WAITING_RESET")
+                    if once:
+                        return "WAITING_RESET"
+                    continue
+                if exc.reason.startswith("limits_error:"):
+                    _set(job_path, job, "ERROR", exc.reason.removeprefix("limits_error:"))
+                    return "ERROR"
+                _set(job_path, job, "NEEDS_USER", exc.reason)
+                return "NEEDS_USER"
             except (ResumeError, OSError) as exc:
                 _set(job_path, job, "NEEDS_USER", str(exc))
                 return "NEEDS_USER"

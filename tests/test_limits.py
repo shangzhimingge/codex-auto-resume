@@ -45,6 +45,16 @@ class LimitsTests(unittest.TestCase):
         snapshot = self.limits(value)
         self.assertEqual(40, reset_deadline(snapshot, now=5))
 
+    def test_non_null_reached_type_counts_as_exhausted(self):
+        value = ('{"rateLimits":{"primary":{"usedPercent":10,"resetsAt":40},'
+                 '"rateLimitReachedType":"primary"}}')
+        snapshot = self.limits(value)
+        self.assertEqual(40, reset_deadline(snapshot, now=5))
+
+    def test_past_reset_timestamp_requests_reprobe_instead_of_error(self):
+        snapshot = self.limits('{"rateLimits":{"primary":{"usedPercent":100,"resetsAt":4}}}')
+        self.assertEqual(5, reset_deadline(snapshot, now=5))
+
     def test_windows_default_uses_node_entrypoint_not_batch_wrapper(self):
         wrapper = Path(self._tmp.name) / "codex.cmd"
         entry = wrapper.parent / "node_modules" / "@openai" / "codex" / "bin" / "codex.js"

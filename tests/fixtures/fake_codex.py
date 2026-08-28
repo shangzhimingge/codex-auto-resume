@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+import time
 
 
 def emit(value):
@@ -34,6 +35,7 @@ def exec_resume():
             json.dump(sys.argv[1:], handle)
     thread_id = os.environ.get("FAKE_THREAD_ID", sys.argv[3])
     emit({"type": "thread.started", "thread_id": thread_id})
+    time.sleep(float(os.environ.get("FAKE_RESUME_SLEEP", "0")))
     emit({"type": os.environ.get("FAKE_FINAL_EVENT", "turn.completed")})
     return int(os.environ.get("FAKE_EXIT", "0"))
 

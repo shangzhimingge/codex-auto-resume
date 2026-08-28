@@ -1,6 +1,10 @@
 import json
 import os
+import queue
+import signal
 import subprocess
+import threading
+import time
 import uuid
 
 from .limits import _normalize_command
@@ -8,6 +12,13 @@ from .limits import _normalize_command
 
 class ResumeError(RuntimeError):
     pass
+
+
+class ResumeInterrupted(ResumeError):
+    def __init__(self, reason, thread_verified=False):
+        super().__init__(reason)
+        self.reason = reason
+        self.thread_verified = thread_verified
 
 
 class ResumeResult:
@@ -19,45 +30,103 @@ class ResumeResult:
 
 def validate_thread_id(thread_id):
     parsed = uuid.UUID(thread_id)
-    if str(parsed) != thread_id.lower():
+    if str(parsed) != thread_id:
         raise ValueError("thread id must be a canonical UUID")
-    return str(parsed)
+    return thread_id
 
 
-def resume_thread(codex_command, thread_id, prompt, project, env=None):
+def _terminate_process_tree(proc):
+    if proc.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=5, shell=False, check=False)
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    try:
+        proc.wait(timeout=0.5)
+    except subprocess.TimeoutExpired:
+        if os.name != "nt":
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        else:
+            proc.kill()
+        proc.wait(timeout=1)
+
+
+def resume_thread(codex_command, thread_id, prompt, project, env=None,
+                  supervisor=None, supervisor_interval=5):
     thread_id = validate_thread_id(thread_id)
     argv = [*_normalize_command(codex_command), "exec", "resume", thread_id, prompt, "--json"]
     child_env = os.environ.copy()
     if env:
         child_env.update(env)
+    process_options = {}
+    if os.name == "nt":
+        process_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        process_options["start_new_session"] = True
     proc = subprocess.Popen(argv, cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, encoding="utf-8", errors="replace", env=child_env,
-                            shell=False)
+                            shell=False, **process_options)
     events, started = [], False
+    output = queue.Queue()
+    stderr_lines = []
+
+    def read_stdout():
+        for value in proc.stdout:
+            output.put(value)
+        output.put(None)
+
+    stdout_worker = threading.Thread(target=read_stdout, daemon=True)
+    stderr_worker = threading.Thread(target=lambda: stderr_lines.extend(proc.stderr.readlines()), daemon=True)
+    stdout_worker.start()
+    stderr_worker.start()
+    last_supervision = time.monotonic()
     try:
-        for line in proc.stdout:
+        while True:
+            timeout = max(0.01, supervisor_interval) if supervisor else None
+            try:
+                line = output.get(timeout=timeout)
+            except queue.Empty:
+                line = ""
+            if line is None:
+                break
             try:
                 event = json.loads(line)
             except json.JSONDecodeError:
-                continue
-            events.append(event)
-            if event.get("type") == "thread.started" and not started:
-                actual = event.get("thread_id")
-                if actual != thread_id:
-                    proc.terminate()
-                    raise ResumeError(f"thread identity mismatch: expected {thread_id}, got {actual}")
-                started = True
+                event = None
+            if event is not None:
+                events.append(event)
+                if event.get("type") == "thread.started" and not started:
+                    actual = event.get("thread_id")
+                    if actual != thread_id:
+                        _terminate_process_tree(proc)
+                        raise ResumeError(f"thread identity mismatch: expected {thread_id}, got {actual}")
+                    started = True
+            if supervisor and time.monotonic() - last_supervision >= supervisor_interval:
+                reason = supervisor()
+                last_supervision = time.monotonic()
+                if reason:
+                    _terminate_process_tree(proc)
+                    raise ResumeInterrupted(reason, thread_verified=started)
         returncode = proc.wait()
+        stderr_worker.join(timeout=1)
         if not started:
             raise ResumeError("resume produced no thread.started event")
         completed = returncode == 0 and any(item.get("type") == "turn.completed" for item in events)
         if returncode != 0:
-            raise ResumeError(f"Codex resume exited with {returncode}: {proc.stderr.read().strip()}")
+            raise ResumeError(f"Codex resume exited with {returncode}: {''.join(stderr_lines).strip()}")
         return ResumeResult(completed, returncode, events)
     finally:
         if proc.poll() is None:
-            proc.terminate()
-            proc.wait(timeout=2)
+            _terminate_process_tree(proc)
         for stream in (proc.stdout, proc.stderr):
             if stream is not None:
                 stream.close()

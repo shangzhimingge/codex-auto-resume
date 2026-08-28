@@ -11,10 +11,11 @@ class LimitsError(RuntimeError):
 
 
 class LimitsSnapshot:
-    def __init__(self, limit_id, buckets, raw):
+    def __init__(self, limit_id, buckets, raw, reached_type=None):
         self.limit_id = limit_id
         self.buckets = buckets
         self.raw = raw
+        self.reached_type = reached_type
 
 
 def _normalize_command(codex_command):
@@ -107,14 +108,16 @@ def read_limits(codex_command=("codex",), timeout=15):
         buckets.append({"name": name, "used_percent": float(used), "resets_at": reset})
     if not buckets:
         raise LimitsError("no rate-limit windows found")
-    return LimitsSnapshot(limit_id, buckets, result)
+    return LimitsSnapshot(limit_id, buckets, result, selected.get("rateLimitReachedType"))
 
 
 def reset_deadline(snapshot, now):
     exhausted = [item for item in snapshot.buckets if item["used_percent"] >= 100]
+    if snapshot.reached_type is not None:
+        exhausted = list(snapshot.buckets)
     if not exhausted:
         return None
     resets = [item["resets_at"] for item in exhausted]
-    if any(value is None or value <= now for value in resets):
-        raise LimitsError("exhausted window has no future reset timestamp")
-    return max(resets)
+    if any(value is None for value in resets):
+        raise LimitsError("exhausted window has no reset timestamp")
+    return max(float(now), max(resets))

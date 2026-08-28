@@ -35,12 +35,11 @@ def _changed_paths(project):
         if not entry:
             continue
         status, path = entry[:2], entry[3:]
-        if status[0] in "RC" and i < len(entries):
+        paths.append(path)
+        if ("R" in status or "C" in status) and i < len(entries):
             path = entries[i]
             i += 1
-        if any(part.startswith(".") for part in Path(path).parts):
-            continue
-        paths.append(path)
+            paths.append(path)
     return raw, sorted(set(paths))
 
 

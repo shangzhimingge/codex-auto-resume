@@ -53,4 +53,6 @@ python scripts/watchdog.py probe-limits
 
 守护进程严格执行 app-server 的 `initialize` → `initialized` → `account/rateLimits/read` 握手，优先读取 `rateLimitsByLimitId.codex`，并同时判断 primary 与 secondary 窗口。额度数据缺失或畸形时按关闭状态处理。
 
+续作子进程运行期间持续重新读取用量。任一窗口达到 100%，或 `rateLimitReachedType` 为非空值时，终止整个受管进程组并返回 `WAITING_RESET`；不得让续作转入 credits 计费。每次等待不超过配置的轮询间隔，系统休眠或旧重置时间只触发重新探测。
+
 恢复时只使用保存的线程 UUID。先确认 Git 快照无冲突，再在原项目目录启动恢复命令；读取首个 `thread.started` 并核对 UUID。若仓库被外部修改、线程身份不匹配、达到最大循环次数或状态异常，将任务标记为 `NEEDS_USER`、`MAX_CYCLES` 或 `ERROR`。
