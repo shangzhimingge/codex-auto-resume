@@ -1,8 +1,10 @@
+import getpass
 import hashlib
 import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -12,13 +14,14 @@ from pathlib import Path
 from .services import file_digest, service_adapter
 
 PRODUCT = "io.github.shangzhimingge.codex-auto-resume"
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 BEGIN = "<!-- BEGIN CODEX-AUTO-RESUME MANAGED BLOCK -->"
 END = "<!-- END CODEX-AUTO-RESUME MANAGED BLOCK -->"
 MANIFEST_SCHEMA = 1
 KNOWN_LEGACY_DIGESTS = {
     "1.1.0": "d80744c81d3d6fd58c1b1ba0d2ec7194e7f7ae2c95fd75c44be5a7aa4156b27b",
     "1.1.1": "d7cf8bc5e2cf304c6e80ef485b65ef34bb48788935d7435320dbfd50d980fc87",
+    "1.2.0": "f44ca8e992174d9c8f6c86473ba9d32d38fb96f936ba8d7242fefd8fc63ace2c",
 }
 
 
@@ -257,6 +260,151 @@ def _prerequisites():
     }
 
 
+def _prepare_runtime_layout(codex_home):
+    root = Path(codex_home).expanduser().resolve() / "auto-resume"
+    layout = {
+        "root": root,
+        "jobs": root / "jobs",
+        "checkpoints": root / "checkpoints",
+        "logs": root / "logs",
+        "state": root / "state",
+    }
+    for name in ("jobs", "checkpoints", "logs", "state"):
+        layout[name].mkdir(parents=True, exist_ok=True)
+    migrations = {
+        root / "daemon-state.json": layout["state"] / "daemon-state.json",
+        root / "daemon.lock": layout["state"] / "daemon.lock",
+        root / "daemon.stdout.log": layout["logs"] / "daemon.stdout.log",
+        root / "daemon.stderr.log": layout["logs"] / "daemon.stderr.log",
+    }
+    for legacy, destination in migrations.items():
+        if legacy.exists() and not destination.exists():
+            try:
+                os.replace(legacy, destination)
+            except OSError:
+                # A v1.2.0 daemon may still own its root-level lock. The newly
+                # activated daemon completes this migration after the old process stops.
+                pass
+    return layout
+
+
+def _diagnostic(status, detail):
+    return {"status": status, "detail": detail}
+
+
+def _run_health(argv, timeout, runner):
+    try:
+        result = runner(
+            list(map(str, argv)), text=True, encoding="utf-8", errors="replace",
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False, check=False,
+            timeout=timeout,
+        )
+        return result, None
+    except subprocess.TimeoutExpired:
+        return None, f"timed out after {timeout} seconds"
+    except OSError as exc:
+        return None, str(exc)
+
+
+def _health_diagnostics(codex_home, platform_name, simulate=False, timeout=15, runner=None):
+    runner = runner or subprocess.run
+    layout = _prepare_runtime_layout(codex_home)
+    diagnostics = {}
+    if simulate:
+        diagnostics.update({
+            "codex_login": _diagnostic("ok", "simulated"),
+            "rate_limit_probe": _diagnostic("ok", "simulated"),
+            "daemon_heartbeat": _diagnostic("ok", "simulated"),
+        })
+    else:
+        codex = shutil.which("codex") or "codex"
+        login, error = _run_health([codex, "login", "status"], timeout, runner)
+        if error:
+            diagnostics["codex_login"] = _diagnostic("error", error)
+        elif login.returncode == 0:
+            diagnostics["codex_login"] = _diagnostic("ok", (login.stdout or "logged in").strip())
+        else:
+            diagnostics["codex_login"] = _diagnostic(
+                "error", (login.stderr or login.stdout or "Codex is not logged in").strip())
+
+        unified = (Path(codex_home).expanduser().resolve() / "skills" / "codex-auto-resume" /
+                   "scripts" / "auto_resume.py")
+        probe, error = _run_health(
+            [sys.executable, unified, "probe-limits", "--timeout", str(timeout)], timeout, runner)
+        if error:
+            diagnostics["rate_limit_probe"] = _diagnostic("error", error)
+        elif probe.returncode != 0:
+            diagnostics["rate_limit_probe"] = _diagnostic(
+                "error", (probe.stderr or probe.stdout or "rate-limit probe failed").strip())
+        else:
+            try:
+                snapshot = json.loads(probe.stdout)
+                if not snapshot.get("limit_id"):
+                    raise ValueError("missing limit_id")
+                diagnostics["rate_limit_probe"] = _diagnostic("ok", snapshot["limit_id"])
+            except (ValueError, AttributeError):
+                diagnostics["rate_limit_probe"] = _diagnostic("error", "malformed probe response")
+
+        daemon, error = _run_health(
+            [sys.executable, unified, "status", "--codex-home", codex_home], timeout, runner)
+        if error:
+            diagnostics["daemon_heartbeat"] = _diagnostic("error", error)
+        elif daemon.returncode != 0:
+            diagnostics["daemon_heartbeat"] = _diagnostic(
+                "error", (daemon.stderr or daemon.stdout or "daemon status failed").strip())
+        else:
+            try:
+                state = json.loads(daemon.stdout)
+                heartbeat = state.get("heartbeat_at")
+                age = time.time() - heartbeat
+                if (not state.get("running") or isinstance(heartbeat, bool) or
+                        not isinstance(heartbeat, (int, float)) or age < -5 or age > 30):
+                    raise ValueError("daemon lease or heartbeat is stale")
+                diagnostics["daemon_heartbeat"] = _diagnostic(
+                    "ok", f"pid={state.get('pid')} heartbeat_age={age:.1f}s")
+            except (ValueError, TypeError, AttributeError):
+                diagnostics["daemon_heartbeat"] = _diagnostic(
+                    "error", "daemon lease or heartbeat is unavailable")
+
+    write_probe = None
+    fd = None
+    try:
+        fd, write_probe = tempfile.mkstemp(prefix=".doctor-", dir=layout["state"])
+        os.write(fd, b"ok")
+        os.close(fd)
+        fd = None
+        diagnostics["runtime_writable"] = _diagnostic("ok", str(layout["state"]))
+    except OSError as exc:
+        diagnostics["runtime_writable"] = _diagnostic("error", str(exc))
+    finally:
+        if fd is not None:
+            os.close(fd)
+        if write_probe:
+            try:
+                os.unlink(write_probe)
+            except FileNotFoundError:
+                pass
+
+    if platform_name.lower() == "linux":
+        if simulate:
+            diagnostics["linux_linger"] = _diagnostic("ok", "simulated; installer never enables linger")
+        else:
+            linger, error = _run_health(
+                ["loginctl", "show-user", getpass.getuser(), "-p", "Linger", "--value"],
+                timeout, runner,
+            )
+            if error or linger.returncode != 0:
+                detail = error or (linger.stderr or linger.stdout or "linger status unavailable").strip()
+                diagnostics["linux_linger"] = _diagnostic(
+                    "warning", f"{detail}; linger is never enabled automatically")
+            elif linger.stdout.strip().lower() == "yes":
+                diagnostics["linux_linger"] = _diagnostic("ok", "enabled")
+            else:
+                diagnostics["linux_linger"] = _diagnostic(
+                    "warning", "disabled; background resume requires a user session")
+    return diagnostics
+
+
 def install(repo_root, codex_home, platform_name=None, simulate=False,
             skip_prerequisites=False, adopt_existing=False, service=None,
             disable_default_activation=False):
@@ -297,6 +445,7 @@ def install(repo_root, codex_home, platform_name=None, simulate=False,
     owned_service = bool(manifest and manifest.get("service", {}).get("platform") in {
         platform_name, "win32" if platform_name == "windows" else platform_name,
     })
+    _prepare_runtime_layout(paths["home"])
     adapter = service or service_adapter(
         platform_name, paths["home"], simulate=simulate, owned=owned_service,
         backend=manifest.get("service", {}).get("backend") if manifest else None,
@@ -357,7 +506,8 @@ def install(repo_root, codex_home, platform_name=None, simulate=False,
             "agents_backup_digest": file_digest(paths["backup"]),
             "activation_enabled": activation_enabled,
             "service": service_metadata,
-            "adopted_legacy": destination_exists and manifest is None,
+            "adopted_legacy": (manifest.get("adopted_legacy", False) if manifest
+                               else destination_exists),
             "installed_at": int(time.time()),
         }
         _write_json(paths["manifest"], manifest_value)
@@ -386,7 +536,8 @@ def install(repo_root, codex_home, platform_name=None, simulate=False,
     return {"version": VERSION, "manifest": manifest_value, "idempotent": False}
 
 
-def doctor(codex_home, platform_name=None, simulate=False, skip_prerequisites=False):
+def doctor(codex_home, platform_name=None, simulate=False, skip_prerequisites=False,
+           health_timeout=15, health_runner=None):
     paths = _manifest_paths(codex_home)
     checks = {}
     requirements = _prerequisites()
@@ -410,6 +561,7 @@ def doctor(codex_home, platform_name=None, simulate=False, skip_prerequisites=Fa
         adapter = service_adapter(
             platform_name or manifest["service"]["platform"], paths["home"],
             simulate=simulate, owned=True, backend=manifest["service"].get("backend"),
+            command_timeout=health_timeout,
         )
         status = adapter.status()
         checks["service_identity"] = (manifest["service"]["platform"] == adapter.platform_name and
@@ -426,7 +578,24 @@ def doctor(codex_home, platform_name=None, simulate=False, skip_prerequisites=Fa
                                            file_digest(autostart) ==
                                            manifest["service"].get("autostart_digest"))
         checks["service_active"] = status.get("active", False)
-    return {"ok": all(checks.values()) if checks else False, "checks": checks, "manifest": manifest}
+    selected_platform = (platform_name or (manifest or {}).get("service", {}).get("platform") or
+                         sys.platform)
+    diagnostics = _health_diagnostics(
+        paths["home"], selected_platform, simulate=simulate, timeout=health_timeout,
+        runner=health_runner,
+    )
+    checks.update({name: value["status"] != "error" for name, value in diagnostics.items()})
+    warnings = [name for name, value in diagnostics.items() if value["status"] == "warning"]
+    errors = [name for name, value in diagnostics.items() if value["status"] == "error"]
+    return {
+        "ok": (all(checks.values()) if checks else False) and not errors,
+        "degraded": bool(warnings),
+        "checks": checks,
+        "diagnostics": diagnostics,
+        "warnings": warnings,
+        "errors": errors,
+        "manifest": manifest,
+    }
 
 
 def uninstall(codex_home, platform_name=None, simulate=False, purge_data=False):

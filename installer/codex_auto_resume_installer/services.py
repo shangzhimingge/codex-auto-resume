@@ -48,13 +48,14 @@ class BaseService:
     service_id = "unknown"
 
     def __init__(self, codex_home, user_home=None, simulate=False, owned=False, runner=None,
-                 backend=None):
+                 backend=None, command_timeout=15):
         self.codex_home = Path(codex_home).resolve()
         self.user_home = Path(user_home or Path.home()).resolve()
         self.simulate = bool(simulate)
         self.owned = bool(owned)
         self.runner = runner or subprocess.run
         self.backend = backend or self.manager
+        self.command_timeout = command_timeout
 
     @property
     def config_path(self):
@@ -67,6 +68,7 @@ class BaseService:
         result = self.runner(
             list(map(str, argv)), text=True, encoding="utf-8", errors="replace",
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False, check=False,
+            timeout=self.command_timeout,
         )
         if check and result.returncode != 0:
             detail = (result.stderr or result.stdout or "service command failed").strip()
@@ -331,8 +333,8 @@ class MacLaunchAgentService(BaseService):
             "RunAtLoad": True,
             "KeepAlive": True,
             "ProcessType": "Background",
-            "StandardOutPath": str(self.codex_home / "auto-resume" / "daemon.stdout.log"),
-            "StandardErrorPath": str(self.codex_home / "auto-resume" / "daemon.stderr.log"),
+            "StandardOutPath": str(self.codex_home / "auto-resume" / "logs" / "daemon.stdout.log"),
+            "StandardErrorPath": str(self.codex_home / "auto-resume" / "logs" / "daemon.stderr.log"),
         }
         return plistlib.dumps(value, fmt=plistlib.FMT_XML)
 
@@ -414,7 +416,7 @@ class LinuxSystemdService(BaseService):
 
 
 def service_adapter(platform_name, codex_home, user_home=None, simulate=False,
-                    owned=False, runner=None, backend=None):
+                    owned=False, runner=None, backend=None, command_timeout=15):
     normalized = platform_name.lower()
     classes = {
         "win32": WindowsTaskService,
@@ -434,4 +436,4 @@ def service_adapter(platform_name, codex_home, user_home=None, simulate=False,
     if cls is WindowsTaskService and backend is None:
         backend = "scheduled_task"
     return cls(codex_home, user_home=user_home, simulate=simulate, owned=owned, runner=runner,
-               backend=backend)
+               backend=backend, command_timeout=command_timeout)

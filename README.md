@@ -4,7 +4,7 @@
 
 [简体中文](./README.zh-CN.md)
 
-![Version](https://img.shields.io/badge/version-v1.2.0-2563eb)
+![Version](https://img.shields.io/badge/version-v1.2.1-2563eb)
 ![License](https://img.shields.io/badge/license-MIT-16a34a)
 ![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-111827)
 
@@ -44,9 +44,11 @@ npx -y github:shangzhimingge/codex-auto-resume uninstall --purge-data
 
 On Windows, the installer first requests a least-privilege per-user `ONLOGON` task. If Windows denies that registration, it writes an owned launcher to the current user's Startup folder and immediately starts the hidden daemon with a verified PID/heartbeat handshake. The selected backend and launcher digest are recorded in the ownership manifest.
 
-The Linux adapter runs `systemctl --user enable --now`; it never enables user lingering and never invokes `loginctl`.
+The Linux adapter runs `systemctl --user enable --now` and never enables user lingering. `doctor` only reads the current linger state with a bounded `loginctl` query and reports disabled/unavailable linger as a warning.
 
 The complete installation and service path is validated on Windows. macOS and Linux adapter generation, transactional installation, diagnosis, uninstall, and purge paths are exercised through platform simulations; run `doctor` after installation on those platforms.
+
+`doctor` separately reports errors and warnings. It checks the ownership manifest, service configuration, Codex login, a read-only app-server rate-limit probe, daemon lease/heartbeat, and runtime-directory write access. External checks have bounded timeouts; warnings produce a degraded but usable result.
 
 ## Transaction and ownership safety
 
@@ -82,10 +84,13 @@ The daemon is a lightweight supervisor. Existing per-job watchdog ownership rema
 ```text
 %CODEX_HOME%/auto-resume/
 ├── install-manifest.json
-├── daemon-state.json
 ├── jobs/<JOB_ID>.json
-└── checkpoints/<JOB_ID>.md
+├── checkpoints/<JOB_ID>.md
+├── logs/{daemon.stdout.log,daemon.stderr.log}
+└── state/{daemon-state.json,daemon.lock}
 ```
+
+Upgrades migrate the v1.2.0 root-level daemon state, lock, and log files when present. Jobs and checkpoints keep their existing paths.
 
 Job states are `REGISTERED`, `RUNNING`, `WAITING_RESET`, `RESUMING`, `DONE`, `NEEDS_USER`, `MAX_CYCLES`, and `ERROR`. Resume cycles are unlimited by default; a positive `--max-cycles` may be set explicitly.
 
@@ -98,9 +103,13 @@ python installer.py uninstall
 ```
 
 ```bash
-python ~/.codex/skills/codex-auto-resume/scripts/daemon.py status
-python ~/.codex/skills/codex-auto-resume/scripts/watchdog.py probe-limits
+python ~/.codex/skills/codex-auto-resume/scripts/auto_resume.py preflight --opt-out
+python ~/.codex/skills/codex-auto-resume/scripts/auto_resume.py daemon status
+python ~/.codex/skills/codex-auto-resume/scripts/auto_resume.py probe-limits
+python ~/.codex/skills/codex-auto-resume/scripts/auto_resume.py status --job JOB_ID
 ```
+
+The earlier `preflight.py`, `daemon.py`, `watchdog.py`, `register.py`, and `checkpoint.py` entrypoints remain compatible.
 
 The PowerShell wrapper remains available:
 

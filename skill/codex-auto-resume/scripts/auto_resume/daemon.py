@@ -7,12 +7,16 @@ from pathlib import Path
 
 from .processes import process_identity, process_is_running
 from .registering import WatchdogStartError, launch_watchdog
-from .state import ACTIVE_STATES, FileLock, atomic_write_json, load_job, load_json, runtime_home
+from .state import (ACTIVE_STATES, FileLock, atomic_write_json, ensure_runtime_layout,
+                    load_job, load_json, runtime_home)
 from .watchdog_lease import watchdog_lease_is_live
 
 
 def daemon_state_path(codex_home=None):
-    return runtime_home(codex_home) / "daemon-state.json"
+    layout = ensure_runtime_layout(codex_home, best_effort=True)
+    preferred = layout["state"] / "daemon-state.json"
+    legacy = layout["root"] / "daemon-state.json"
+    return preferred if preferred.exists() or not legacy.exists() else legacy
 
 
 def _daemon_state(codex_home=None):
@@ -40,7 +44,10 @@ def stop_daemon(codex_home=None, timeout=10, sleep=time.sleep):
     pid, identity = state.get("pid"), state.get("process_identity")
     if not process_is_running(pid, identity):
         return {"stopped": False, "reason": "not_running"}
-    lock_path = runtime_home(codex_home) / "daemon.lock"
+    layout = ensure_runtime_layout(codex_home, best_effort=True)
+    preferred_lock = layout["state"] / "daemon.lock"
+    legacy_lock = layout["root"] / "daemon.lock"
+    lock_path = preferred_lock if preferred_lock.exists() or not legacy_lock.exists() else legacy_lock
     os.kill(pid, signal.SIGTERM)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -96,8 +103,8 @@ def scan_once(codex_home=None):
 
 
 def run_daemon(codex_home=None, interval=10, once=False, sleep=time.sleep):
-    home = runtime_home(codex_home)
-    home.mkdir(parents=True, exist_ok=True)
+    layout = ensure_runtime_layout(codex_home)
+    home = layout["root"]
     stop = {"requested": False}
 
     def request_stop(*_):
@@ -106,7 +113,7 @@ def run_daemon(codex_home=None, interval=10, once=False, sleep=time.sleep):
     for name in ("SIGINT", "SIGTERM"):
         if hasattr(signal, name):
             signal.signal(getattr(signal, name), request_stop)
-    with FileLock(home / "daemon.lock"):
+    with FileLock(layout["state"] / "daemon.lock"):
         nonce = uuid.uuid4().hex
         while True:
             result = scan_once(codex_home)

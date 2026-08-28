@@ -14,6 +14,7 @@ def build_parser():
     parser.add_argument("--disable-default-activation", action="store_true")
     parser.add_argument("--adopt-existing", action="store_true")
     parser.add_argument("--purge-data", action="store_true")
+    parser.add_argument("--health-timeout", type=int, default=15)
     parser.add_argument("--platform", choices=("win32", "darwin", "linux"), help=argparse.SUPPRESS)
     return parser
 
@@ -32,7 +33,7 @@ def main(argv=None):
             )
         elif args.command == "doctor":
             result = doctor(args.codex_home, platform_name=args.platform, simulate=simulate,
-                            skip_prerequisites=skip)
+                            skip_prerequisites=skip, health_timeout=args.health_timeout)
         else:
             result = uninstall(args.codex_home, platform_name=args.platform, simulate=simulate,
                                purge_data=args.purge_data)

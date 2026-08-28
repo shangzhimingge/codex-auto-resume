@@ -26,13 +26,13 @@ $ORIGINAL_GOAL = "<ORIGINAL_GOAL>"
 先检查当前用户消息。若包含 `AUTO_RESUME=OFF` 或“本任务禁用自动续作”，执行并接受 `SKIPPED`：
 
 ```powershell
-python "$SKILL_ROOT\scripts\preflight.py" --opt-out
+python "$SKILL_ROOT\scripts\auto_resume.py" preflight --opt-out
 ```
 
 若可信会话元数据提供原样规范小写的精确线程 UUID，且当前目录属于 Git 仓库，执行：
 
 ```powershell
-python "$SKILL_ROOT\scripts\preflight.py" --thread-id "$THREAD_ID" --project "$PROJECT" --goal "$ORIGINAL_GOAL"
+python "$SKILL_ROOT\scripts\auto_resume.py" preflight --thread-id "$THREAD_ID" --project "$PROJECT" --goal "$ORIGINAL_GOAL"
 ```
 
 任一条件缺失时，不猜测 UUID、不向用户追问；执行缺少对应参数的预检并接受 `SKIPPED`。`THREAD_ID + PROJECT` 是唯一键，因此同一任务仅注册一次，目标措辞变化不会创建新任务。
@@ -79,9 +79,9 @@ python "$SKILL_ROOT\scripts\checkpoint.py" --job-id "$JOB_ID" --set "AUTO_RESUME
 ## 查看状态与诊断
 
 ```powershell
-python "$SKILL_ROOT\scripts\watchdog.py" status --job "$JOB_ID"
-python "$SKILL_ROOT\scripts\watchdog.py" probe-limits
-python "$SKILL_ROOT\scripts\daemon.py" status
+python "$SKILL_ROOT\scripts\auto_resume.py" status --job "$JOB_ID"
+python "$SKILL_ROOT\scripts\auto_resume.py" probe-limits
+python "$SKILL_ROOT\scripts\auto_resume.py" daemon status
 ```
 
 守护进程严格执行 app-server 的 `initialize` → `initialized` → `account/rateLimits/read` 握手，优先读取 `rateLimitsByLimitId.codex`，并同时判断 primary 与 secondary 窗口。额度数据缺失或畸形时按关闭状态处理。

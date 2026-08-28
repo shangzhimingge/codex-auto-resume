@@ -4,7 +4,7 @@
 
 [English](./README.md)
 
-![Version](https://img.shields.io/badge/version-v1.2.0-2563eb)
+![Version](https://img.shields.io/badge/version-v1.2.1-2563eb)
 ![License](https://img.shields.io/badge/license-MIT-16a34a)
 ![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-111827)
 
@@ -44,9 +44,11 @@ npx -y github:shangzhimingge/codex-auto-resume uninstall --purge-data
 
 Windows 安装器会先申请最低权限的当前用户 `ONLOGON` 任务；若系统拒绝注册，则写入由清单托管的当前用户“启动”目录启动器，并通过 PID 与心跳握手确认隐藏守护进程已经启动。最终选用的后端及启动器摘要会写入所有权清单。
 
-Linux 适配器执行 `systemctl --user enable --now`，不会开启用户 lingering，也不会调用 `loginctl`。
+Linux 适配器执行 `systemctl --user enable --now`，不会开启用户 lingering。`doctor` 只通过带超时的 `loginctl` 查询读取当前 linger 状态；未开启或查询不可用仅作为警告报告。
 
 完整安装与服务链路已在 Windows 上实际验证。macOS 和 Linux 的服务生成、事务安装、诊断、卸载与清理路径通过平台模拟验证；在这些平台安装后请执行 `doctor`。
+
+`doctor` 会分别报告错误与警告，并检查所有权清单、服务配置、Codex 登录状态、只读 app-server 限额探针、守护进程 lease/心跳，以及运行目录写权限。所有外部检查均有超时；仅有警告时状态为可用但退化。
 
 ## 事务与所有权安全
 
@@ -82,10 +84,13 @@ Python 安装器会：
 ```text
 %CODEX_HOME%/auto-resume/
 ├── install-manifest.json
-├── daemon-state.json
 ├── jobs/<JOB_ID>.json
-└── checkpoints/<JOB_ID>.md
+├── checkpoints/<JOB_ID>.md
+├── logs/{daemon.stdout.log,daemon.stderr.log}
+└── state/{daemon-state.json,daemon.lock}
 ```
+
+升级时会兼容迁移 v1.2.0 位于根目录的 daemon 状态、锁和日志文件；任务与检查点路径保持不变。
 
 任务状态包括 `REGISTERED`、`RUNNING`、`WAITING_RESET`、`RESUMING`、`DONE`、`NEEDS_USER`、`MAX_CYCLES` 和 `ERROR`。默认续作循环次数无限；可显式设置正整数 `--max-cycles`。
 
@@ -98,9 +103,13 @@ python installer.py uninstall
 ```
 
 ```bash
-python ~/.codex/skills/codex-auto-resume/scripts/daemon.py status
-python ~/.codex/skills/codex-auto-resume/scripts/watchdog.py probe-limits
+python ~/.codex/skills/codex-auto-resume/scripts/auto_resume.py preflight --opt-out
+python ~/.codex/skills/codex-auto-resume/scripts/auto_resume.py daemon status
+python ~/.codex/skills/codex-auto-resume/scripts/auto_resume.py probe-limits
+python ~/.codex/skills/codex-auto-resume/scripts/auto_resume.py status --job JOB_ID
 ```
+
+原有的 `preflight.py`、`daemon.py`、`watchdog.py`、`register.py` 和 `checkpoint.py` 入口继续兼容。
 
 PowerShell 包装器继续保留：
 

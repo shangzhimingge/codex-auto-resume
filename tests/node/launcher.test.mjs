@@ -32,5 +32,5 @@ test('no-argument launcher performs the default simulated install', () => {
     windowsHide: true,
   });
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-  assert.equal(fs.readFileSync(path.join(home, 'skills', 'codex-auto-resume', 'VERSION'), 'utf8').trim(), '1.2.0');
+  assert.equal(fs.readFileSync(path.join(home, 'skills', 'codex-auto-resume', 'VERSION'), 'utf8').trim(), '1.2.1');
 });

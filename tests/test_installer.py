@@ -33,7 +33,7 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(0, first.returncode, first.stderr)
             installed = home / "skills" / "codex-auto-resume"
             self.assertTrue((installed / "VERSION").is_file())
-            self.assertEqual("1.2.0", (installed / "VERSION").read_text(encoding="utf-8").strip())
+            self.assertEqual("1.2.1", (installed / "VERSION").read_text(encoding="utf-8").strip())
             enabled = agents.read_text(encoding="utf-8")
             self.assertIn(original.strip(), enabled)
             self.assertEqual(1, enabled.count(BEGIN))
@@ -64,10 +64,10 @@ class InstallerTests(unittest.TestCase):
 
     def test_runtime_and_distribution_versions_are_1_2_0(self):
         skill = ROOT / "skill" / "codex-auto-resume"
-        self.assertEqual("1.2.0", (skill / "VERSION").read_text(encoding="utf-8").strip())
+        self.assertEqual("1.2.1", (skill / "VERSION").read_text(encoding="utf-8").strip())
         namespace = {}
         exec((skill / "scripts" / "auto_resume" / "__init__.py").read_text(encoding="utf-8"), namespace)
-        self.assertEqual("1.2.0", namespace["__version__"])
+        self.assertEqual("1.2.1", namespace["__version__"])
 
 
 if __name__ == "__main__":

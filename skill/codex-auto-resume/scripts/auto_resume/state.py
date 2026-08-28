@@ -31,6 +31,34 @@ def runtime_home(explicit=None):
     return Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")).expanduser().resolve() / "auto-resume"
 
 
+def ensure_runtime_layout(explicit=None, best_effort=False):
+    root = runtime_home(explicit)
+    layout = {
+        "root": root,
+        "jobs": root / "jobs",
+        "checkpoints": root / "checkpoints",
+        "logs": root / "logs",
+        "state": root / "state",
+    }
+    for name in ("jobs", "checkpoints", "logs", "state"):
+        layout[name].mkdir(parents=True, exist_ok=True)
+    migrations = {
+        root / "daemon-state.json": layout["state"] / "daemon-state.json",
+        root / "daemon.lock": layout["state"] / "daemon.lock",
+        root / "daemon.stdout.log": layout["logs"] / "daemon.stdout.log",
+        root / "daemon.stderr.log": layout["logs"] / "daemon.stderr.log",
+    }
+    for legacy, destination in migrations.items():
+        if not legacy.exists() or destination.exists():
+            continue
+        try:
+            os.replace(legacy, destination)
+        except OSError:
+            if not best_effort:
+                raise
+    return layout
+
+
 def atomic_write_text(path, text):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
