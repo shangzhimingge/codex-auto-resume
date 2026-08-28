@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).parents[1]
 SCRIPTS = ROOT / "skill" / "codex-auto-resume" / "scripts"
@@ -38,6 +39,17 @@ class StateCheckpointTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     with FileLock(path):
                         pass
+
+    def test_lock_metadata_write_failure_does_not_leak_lock(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "job.lock"
+            with mock.patch("auto_resume.state.os.write", side_effect=PermissionError("busy")):
+                with self.assertRaises(PermissionError):
+                    with FileLock(path):
+                        pass
+            self.assertFalse(path.exists())
+            with FileLock(path):
+                pass
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 import ctypes
 import os
+import subprocess
 from pathlib import Path
 
 if os.name == "nt":
@@ -29,6 +30,29 @@ def _windows_handle(pid):
     return _kernel32.OpenProcess(0x1000, False, pid)
 
 
+def _proc_fields(pid):
+    stat = Path(f"/proc/{pid}/stat")
+    if not stat.exists():
+        return None
+    try:
+        return stat.read_text(encoding="utf-8").rsplit(")", 1)[1].split()
+    except (OSError, IndexError):
+        return None
+
+
+def _ps_identity(pid):
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)], text=True, encoding="utf-8",
+            errors="replace", stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            timeout=3, shell=False, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    value = result.stdout.strip() if result.returncode == 0 else ""
+    return f"ps:{value}" if value else None
+
+
 def process_identity(pid):
     if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
         return None
@@ -45,13 +69,9 @@ def process_identity(pid):
             return f"win:{creation.high:08x}{creation.low:08x}"
         finally:
             _kernel32.CloseHandle(handle)
-    stat = Path(f"/proc/{pid}/stat")
-    try:
-        # Field 22 is starttime; split after the final ')' to tolerate spaces in comm.
-        fields = stat.read_text(encoding="utf-8").rsplit(")", 1)[1].split()
-        return f"proc:{fields[19]}"
-    except (OSError, IndexError):
-        return None
+    fields = _proc_fields(pid)
+    # Field 22 is starttime; split after the final ')' to tolerate spaces in comm.
+    return f"proc:{fields[19]}" if fields and len(fields) > 19 else _ps_identity(pid)
 
 
 def process_is_running(pid, expected_identity=None):
@@ -69,11 +89,9 @@ def process_is_running(pid, expected_identity=None):
     else:
         try:
             os.kill(pid, 0)
-            fields = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()
-            running = fields[0] != "Z"
+            fields = _proc_fields(pid)
+            running = not fields or fields[0] != "Z"
         except OSError:
-            running = False
-        except IndexError:
             running = False
     if not running:
         return False

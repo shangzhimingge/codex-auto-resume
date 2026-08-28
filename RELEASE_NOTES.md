@@ -1,36 +1,11 @@
-# v1.1.1 发布说明
+# v1.2.0: cross-platform service and transactional installer
 
-## 修复
+- Added a cross-platform Python installation facade. The no-argument `npx -y github:shangzhimingge/codex-auto-resume` command is now a thin launcher for it.
+- Added a persistent Python supervisor daemon that repairs missing watchdogs for active jobs after login or reboot.
+- Added native per-user service adapters for Windows Task Scheduler, macOS launchd LaunchAgents, and Linux systemd user units. Windows falls back to an owned per-user Startup launcher when task creation is denied; the Linux path does not enable lingering.
+- Added a secure ownership manifest, verified legacy adoption, explicit adoption for locally modified owned files, stable byte-preserving `AGENTS.md` backup, and full installation rollback.
+- Added `doctor`, safe default `uninstall`, and explicit `uninstall --purge-data` behavior.
+- Added English `README.md`, Simplified Chinese `README.zh-CN.md`, and English Skill interface metadata.
+- Preserved the verified recovery core: exact thread UUID, Git snapshot checks, structured checkpoints, process-identity leases, and included-usage-only billing.
 
-- 守护进程使用随机 nonce、心跳与进程创建身份完成启动握手，避免 PID 复用导致错误复用。
-- 仅在证明锁所有者进程已消失或创建身份不匹配后恢复遗留锁；并发存活所有者保持不受影响。
-- 全局 `AGENTS.md` 托管块首次变更前创建字节完全一致的稳定备份；重复安装与禁用不会覆盖该备份。
-
----
-
-# v1.1.0 发布说明
-
-## 新增
-
-- 安装器可将确定性的自动续作预检块写入全局 `CODEX_HOME/AGENTS.md`，并保留其中原有内容与其他托管块。
-- 每个任务默认执行一次预检；支持 `AUTO_RESUME=OFF` 或“本任务禁用自动续作”的单任务退出方式。
-- 默认续作循环次数改为无限；仍可通过正整数 `--max-cycles` 设置有限循环。
-- 自动迁移 v1 任务：旧默认值 5 转为无限，其他正整数保持有限设置。
-
-## 改进
-
-- 按线程 UUID 与项目根目录去重，不受目标措辞变化影响。
-- 并发注册只生成一个任务；复用有效守护进程，并重启失效的活动守护进程。
-- 终态任务保持可复用，不会重复注册或启动守护进程。
-
-## 安装
-
-```powershell
-.\scripts\install.ps1
-```
-
-如需安装 Skill 但关闭默认的每任务预检：
-
-```powershell
-.\scripts\install.ps1 -DisableDefaultActivation
-```
+Validation includes the complete Windows installation/service path, simulated macOS and Linux installs, Python and Node test suites, package inspection, and a live Codex rate-limit probe.

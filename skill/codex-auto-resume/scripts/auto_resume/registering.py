@@ -21,6 +21,12 @@ def windows_creation_flags():
     return subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
 
 
+def detached_process_options():
+    if os.name == "nt":
+        return {"creationflags": windows_creation_flags()}
+    return {"start_new_session": True}
+
+
 def _job_id(thread_id, project):
     return hashlib.sha256(f"{thread_id}\0{project}".encode("utf-8")).hexdigest()[:24]
 
@@ -48,8 +54,7 @@ def launch_watchdog(job_path, codex_command=None, handshake_timeout=10):
     process = subprocess.Popen(
         argv,
         cwd=job["project_root"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL, close_fds=True, creationflags=windows_creation_flags(),
-        shell=False,
+        stderr=subprocess.DEVNULL, close_fds=True, shell=False, **detached_process_options(),
     )
     deadline = time.monotonic() + handshake_timeout
     verified = False

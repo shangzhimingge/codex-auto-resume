@@ -1,114 +1,130 @@
-# Codex 自动续作
+# Codex Auto Resume
 
-这是一个面向 Windows 的 Codex Skill：它在每个任务开始时执行确定性预检；符合条件的任务会自动注册。当 ChatGPT 的 Codex 用量窗口耗尽时，本地守护进程读取官方 app-server 返回的真实重置时间；窗口恢复后，它会核对 Git 快照，并从保存的精确线程 UUID 与结构化检查点继续原任务。
+> **Resume long-running Codex tasks safely after ChatGPT usage-window resets.**
 
-## 特性
+[简体中文](./README.zh-CN.md)
 
-- 只恢复注册时保存的精确线程 UUID，并核对 `thread.started`。
-- 使用 `initialize` → `initialized` → `account/rateLimits/read` 协议读取用量。
-- 同时判断 primary 和 secondary 窗口，等待所有已耗尽窗口中最晚的重置时间。
-- 续作期间持续复查订阅用量；一旦窗口耗尽或服务报告已触达限额，立即终止受管进程树并回到等待状态。
-- 支持原子状态写入、任务锁和 Git 工作区冲突检测。
-- 只使用订阅内用量：忽略 credits，不触发额度重置消费，也不切换到 API 计费。
-- 纯 Python 标准库，无第三方依赖。
-- 默认无限续作；可用正整数 `--max-cycles` 显式设置有限循环。
-- 按 `THREAD_ID + PROJECT` 幂等去重，并发注册只生成一个任务；复用有效守护进程并重启失效租约。
-- 守护进程通过 nonce、心跳和进程创建身份完成启动握手；只有证明锁所有者已失效后才恢复遗留锁。
+![Version](https://img.shields.io/badge/version-v1.2.0-2563eb)
+![License](https://img.shields.io/badge/license-MIT-16a34a)
+![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-111827)
 
-## 环境要求
+Codex Auto Resume is a Codex Skill and local service for Git tasks that may outlive a ChatGPT subscription usage window. It records the exact Codex thread UUID, Git snapshot, and structured checkpoint; waits for the real reset time reported by Codex app-server; and resumes the same thread when included usage is available again.
 
-- Windows 10/11
-- Python 3.9+
-- Git
-- 已登录的 Codex CLI（已验证命令形态适用于 0.144.6）
+It does not spend paid credits, call a reset-credit endpoint, switch to API billing, guess a thread, approve permissions, force-reset Git, or overwrite unexpected repository changes.
 
-## 安装
+## Install
 
-在仓库根目录运行安装器：
+Node.js is only a thin launcher. The transactional installer and all installation decisions are implemented in Python.
+
+```bash
+npx -y github:shangzhimingge/codex-auto-resume
+```
+
+The no-argument command installs or upgrades the Skill, creates the global activation block, writes a stable byte-preserving `AGENTS.md` backup, installs the native per-user service, and records an ownership manifest.
+
+Useful commands:
+
+```bash
+npx -y github:shangzhimingge/codex-auto-resume doctor
+npx -y github:shangzhimingge/codex-auto-resume install --disable-default-activation
+npx -y github:shangzhimingge/codex-auto-resume install --adopt-existing
+npx -y github:shangzhimingge/codex-auto-resume uninstall
+npx -y github:shangzhimingge/codex-auto-resume uninstall --purge-data
+```
+
+`uninstall` preserves jobs and checkpoints. `--purge-data` is the explicit destructive option for removing runtime state. The stable `AGENTS.md.codex-auto-resume.backup` is preserved in both cases.
+
+## Native service adapters
+
+| Platform | Per-user service | Configuration |
+| --- | --- | --- |
+| Windows | Task Scheduler; per-user Startup fallback when task creation is denied | `%CODEX_HOME%/auto-resume/service/windows/codex-auto-resume.cmd` |
+| macOS | launchd LaunchAgent | `~/Library/LaunchAgents/io.github.shangzhimingge.codex-auto-resume.plist` |
+| Linux | systemd user unit | `~/.config/systemd/user/codex-auto-resume.service` |
+
+On Windows, the installer first requests a least-privilege per-user `ONLOGON` task. If Windows denies that registration, it writes an owned launcher to the current user's Startup folder and immediately starts the hidden daemon with a verified PID/heartbeat handshake. The selected backend and launcher digest are recorded in the ownership manifest.
+
+The Linux adapter runs `systemctl --user enable --now`; it never enables user lingering and never invokes `loginctl`.
+
+The complete installation and service path is validated on Windows. macOS and Linux adapter generation, transactional installation, diagnosis, uninstall, and purge paths are exercised through platform simulations; run `doctor` after installation on those platforms.
+
+## Transaction and ownership safety
+
+The Python installer:
+
+- stages the new Skill before replacing the installed copy;
+- accepts automatic legacy adoption only when the existing directory has the verified Codex Auto Resume signature;
+- records the installed tree digest, paths, activation state, backup digest, and service identity in `%CODEX_HOME%/auto-resume/install-manifest.json`;
+- detects edits to owned files and requires explicit `--adopt-existing` before replacing them;
+- rejects an unrelated directory at the managed Skill path;
+- restores the prior Skill, `AGENTS.md`, backup, service configuration, and manifest if an installation step fails;
+- removes only manifest-owned artifacts during uninstall.
+
+## How runtime recovery works
+
+```text
+Eligible Git task starts
+  -> deterministic preflight registers exact thread UUID + project
+  -> checkpoint and Git snapshot are written atomically
+  -> native per-user daemon repairs missing active watchdogs
+  -> watchdog reads account/rateLimits/read
+  -> every exhausted usage bucket reaches its real reset time
+  -> Git state is checked for external changes
+  -> codex exec resume uses the saved UUID
+  -> first thread.started UUID is verified
+  -> work continues from NEXT_ACTION
+```
+
+The daemon is a lightweight supervisor. Existing per-job watchdog ownership remains protected by a lock, random nonce, heartbeat, PID, and process-creation identity. This prevents duplicate takeover and PID-reuse mistakes after a reboot or stale process record.
+
+## Runtime state
+
+```text
+%CODEX_HOME%/auto-resume/
+├── install-manifest.json
+├── daemon-state.json
+├── jobs/<JOB_ID>.json
+└── checkpoints/<JOB_ID>.md
+```
+
+Job states are `REGISTERED`, `RUNNING`, `WAITING_RESET`, `RESUMING`, `DONE`, `NEEDS_USER`, `MAX_CYCLES`, and `ERROR`. Resume cycles are unlimited by default; a positive `--max-cycles` may be set explicitly.
+
+## Manual facade and runtime commands
+
+```bash
+python installer.py install
+python installer.py doctor
+python installer.py uninstall
+```
+
+```bash
+python ~/.codex/skills/codex-auto-resume/scripts/daemon.py status
+python ~/.codex/skills/codex-auto-resume/scripts/watchdog.py probe-limits
+```
+
+The PowerShell wrapper remains available:
 
 ```powershell
 .\scripts\install.ps1
 ```
 
-安装器会把 Skill 复制到 `%CODEX_HOME%\skills\codex-auto-resume`，并只更新全局 `%CODEX_HOME%\AGENTS.md` 中自己的托管块；原有内容及 Sol–Luna 托管块保持不变。首次变更托管块前，会创建字节一致且后续不覆盖的 `AGENTS.md.codex-auto-resume.backup`。未设置 `CODEX_HOME` 时使用 `%USERPROFILE%\.codex`。
+## Requirements
 
-安装 Skill 但关闭默认每任务预检：
+- Node.js 18+ for the `npx` launcher
+- Python 3.9+
+- Git
+- logged-in Codex CLI
+- Windows 10/11, macOS with launchd, or Linux with a systemd user session
 
-```powershell
-.\scripts\install.ps1 -DisableDefaultActivation
-```
+## Verification
 
-重启 Codex 或新建任务后即可发现此 Skill。
-
-## 使用
-
-默认激活后，Codex 会在每个任务开始时预检一次。若当前任务不需要自动续作，在用户消息中加入 `AUTO_RESUME=OFF` 或“本任务禁用自动续作”。缺少精确线程 UUID、Git 根目录或目标时，预检返回 `SKIPPED`，不会猜测或追问。
-
-符合条件时，Skill 会用当前线程 UUID、Git 项目根目录和原始目标注册任务，并启动隐藏的后台守护进程。
-
-也可手动注册：
-
-```powershell
-python "$HOME\.codex\skills\codex-auto-resume\scripts\register.py" `
-  --thread-id <UUID> `
-  --project <PROJECT_ROOT> `
-  --goal "<ORIGINAL_GOAL>"
-```
-
-每个关键里程碑后更新检查点：
-
-```powershell
-python "$HOME\.codex\skills\codex-auto-resume\scripts\checkpoint.py" `
-  --job-id <JOB_ID> `
-  --set "COMPLETED=<COMPLETED>" `
-  --set "CURRENT_STATE=<CURRENT_STATE>" `
-  --set "NEXT_ACTION=<NEXT_ACTION>"
-```
-
-任务完整完成并通过最终验证后：
-
-```powershell
-python "$HOME\.codex\skills\codex-auto-resume\scripts\checkpoint.py" `
-  --job-id <JOB_ID> `
-  --set "AUTO_RESUME_STATUS=DONE"
-```
-
-查看任务状态或实时探测用量：
-
-```powershell
-python "$HOME\.codex\skills\codex-auto-resume\scripts\watchdog.py" status --job <JOB_ID>
-python "$HOME\.codex\skills\codex-auto-resume\scripts\watchdog.py" probe-limits
-```
-
-## 状态文件
-
-运行数据保存在 `%CODEX_HOME%\auto-resume`：
-
-```text
-auto-resume/
-├── jobs/<JOB_ID>.json
-└── checkpoints/<JOB_ID>.md
-```
-
-任务状态包括 `REGISTERED`、`RUNNING`、`WAITING_RESET`、`RESUMING`、`DONE`、`NEEDS_USER`、`MAX_CYCLES` 和 `ERROR`。
-
-v1 任务在读取时会原子迁移到 schema v2：旧默认 `max_cycles=5` 转为无限，其他正整数保持有限设置；畸形任务关闭处理。
-
-## 保护机制
-
-- 外部修改导致 Git 快照与检查点不一致时，任务进入 `NEEDS_USER`。
-- 额度响应缺失、畸形或已耗尽窗口缺少重置时间时，任务进入 `ERROR`。
-- 系统休眠导致重置时间已过时后，守护进程会短暂等待并重新读取官方状态，不会依据旧时间继续执行。
-- 恢复出的线程 ID 与保存的 UUID 不一致时立即终止子进程并进入 `NEEDS_USER`。
-- 守护进程不自动批准权限、不覆盖意外更改、不强制重置 Git、不强制推送，也不删除意外文件。
-
-## 测试
-
-```powershell
+```bash
 python -m unittest discover -s tests -v
-python -m compileall -q skill tests
+node --test tests/node/launcher.test.mjs
+python -m compileall -q installer skill tests
+npm pack --dry-run --json
 ```
 
-## 许可证
+## License
 
-MIT
+MIT © 2026 shangzhimingge

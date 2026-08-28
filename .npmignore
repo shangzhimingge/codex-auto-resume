@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+installer/__pycache__/
+installer/codex_auto_resume_installer/__pycache__/
+skill/codex-auto-resume/scripts/__pycache__/
+skill/codex-auto-resume/scripts/auto_resume/__pycache__/
+tests/
+.task-evidence/
+docs/superpowers/

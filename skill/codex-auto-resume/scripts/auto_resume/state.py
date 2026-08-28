@@ -131,7 +131,16 @@ class FileLock:
             "nonce": uuid.uuid4().hex,
             "created_at": time.time(),
         }
-        os.write(self.fd, json.dumps(owner).encode("utf-8"))
+        try:
+            os.write(self.fd, json.dumps(owner).encode("utf-8"))
+        except BaseException:
+            os.close(self.fd)
+            self.fd = None
+            try:
+                self.path.unlink()
+            except FileNotFoundError:
+                pass
+            raise
         return self
 
     def _recover_proven_stale(self):

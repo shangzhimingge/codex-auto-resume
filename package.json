@@ -1,0 +1,45 @@
+{
+  "name": "codex-auto-resume",
+  "version": "1.2.0",
+  "description": "Automatically and safely resume Codex tasks after ChatGPT usage-window resets.",
+  "type": "module",
+  "bin": {
+    "codex-auto-resume": "./bin/cli.mjs"
+  },
+  "files": [
+    "bin/cli.mjs",
+    "installer.py",
+    "installer/__init__.py",
+    "installer/codex_auto_resume_installer/*.py",
+    "activation/AGENTS.block.md",
+    "skill/codex-auto-resume/SKILL.md",
+    "skill/codex-auto-resume/VERSION",
+    "skill/codex-auto-resume/agents/openai.yaml",
+    "skill/codex-auto-resume/scripts/*.py",
+    "skill/codex-auto-resume/scripts/auto_resume/*.py",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE",
+    "RELEASE_NOTES.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "codex",
+    "codex-skills",
+    "agent-skills",
+    "auto-resume",
+    "ai-coding",
+    "coding-agent",
+    "chatgpt"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/shangzhimingge/codex-auto-resume.git"
+  },
+  "scripts": {
+    "test": "node --test tests/node/*.test.mjs"
+  }
+}

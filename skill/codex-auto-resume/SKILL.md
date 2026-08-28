@@ -48,7 +48,7 @@ python "$SKILL_ROOT\scripts\preflight.py" --thread-id "$THREAD_ID" --project "$P
 python "$SKILL_ROOT\scripts\register.py" --thread-id "$THREAD_ID" --project "$PROJECT" --goal "$ORIGINAL_GOAL"
 ```
 
-3. 保存命令返回的 `job_id`。让本地 Windows 守护进程在后台等待真实用量窗口重置。仅在 nonce、心跳和进程创建身份均匹配时复用活动守护进程；失效实例会在完成启动握手后更新 PID。终态任务保持复用且不会重启。
+3. 保存命令返回的 `job_id`。让平台用户级服务与本地守护进程在后台等待真实用量窗口重置。Windows 使用任务计划程序，macOS 使用 LaunchAgent，Linux 使用 systemd 用户单元且不启用 linger。仅在 nonce、心跳和进程创建身份均匹配时复用活动守护进程；失效实例会在完成启动握手后更新 PID。终态任务保持复用且不会重启。
 
 始终使用 `billing_policy=included_only`。忽略付费 credits 和 earned reset credits；不调用任何额度重置消费接口，不使用 API key 计费回退。
 
@@ -81,6 +81,7 @@ python "$SKILL_ROOT\scripts\checkpoint.py" --job-id "$JOB_ID" --set "AUTO_RESUME
 ```powershell
 python "$SKILL_ROOT\scripts\watchdog.py" status --job "$JOB_ID"
 python "$SKILL_ROOT\scripts\watchdog.py" probe-limits
+python "$SKILL_ROOT\scripts\daemon.py" status
 ```
 
 守护进程严格执行 app-server 的 `initialize` → `initialized` → `account/rateLimits/read` 握手，优先读取 `rateLimitsByLimitId.codex`，并同时判断 primary 与 secondary 窗口。额度数据缺失或畸形时按关闭状态处理。

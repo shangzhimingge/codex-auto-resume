@@ -12,10 +12,13 @@ END = "<!-- END CODEX-AUTO-RESUME MANAGED BLOCK -->"
 
 class InstallerTests(unittest.TestCase):
     def run_installer(self, home, *extra):
+        env = os.environ.copy()
+        env["CODEX_AUTO_RESUME_SIMULATE"] = "1"
+        env["CODEX_AUTO_RESUME_SKIP_PREREQUISITES"] = "1"
         return subprocess.run(
             ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(INSTALLER),
              "-CodexHome", str(home), *extra], cwd=ROOT, text=True, encoding="utf-8",
-            errors="replace", capture_output=True, shell=False,
+            errors="replace", capture_output=True, shell=False, env=env,
         )
 
     def test_installer_is_idempotent_preserves_existing_agents_and_can_disable(self):
@@ -30,7 +33,7 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(0, first.returncode, first.stderr)
             installed = home / "skills" / "codex-auto-resume"
             self.assertTrue((installed / "VERSION").is_file())
-            self.assertEqual("1.1.1", (installed / "VERSION").read_text(encoding="utf-8").strip())
+            self.assertEqual("1.2.0", (installed / "VERSION").read_text(encoding="utf-8").strip())
             enabled = agents.read_text(encoding="utf-8")
             self.assertIn(original.strip(), enabled)
             self.assertEqual(1, enabled.count(BEGIN))
@@ -59,12 +62,12 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("AUTO_RESUME=OFF", block)
         self.assertIn("SKIPPED", block)
 
-    def test_runtime_and_distribution_versions_are_1_1_1(self):
+    def test_runtime_and_distribution_versions_are_1_2_0(self):
         skill = ROOT / "skill" / "codex-auto-resume"
-        self.assertEqual("1.1.1", (skill / "VERSION").read_text(encoding="utf-8").strip())
+        self.assertEqual("1.2.0", (skill / "VERSION").read_text(encoding="utf-8").strip())
         namespace = {}
         exec((skill / "scripts" / "auto_resume" / "__init__.py").read_text(encoding="utf-8"), namespace)
-        self.assertEqual("1.1.1", namespace["__version__"])
+        self.assertEqual("1.2.0", namespace["__version__"])
 
 
 if __name__ == "__main__":
