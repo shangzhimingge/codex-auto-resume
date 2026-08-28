@@ -1,6 +1,7 @@
 import json
 import os
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -58,28 +59,67 @@ def validate_job(job):
     extra = set(job) - set(REQUIRED_JOB_FIELDS)
     if missing or extra:
         raise ValueError(f"invalid job fields: missing={sorted(missing)}, extra={sorted(extra)}")
+    if job.get("schema_version") != 2:
+        raise ValueError("unsupported job schema")
+    maximum = job.get("max_cycles")
+    if maximum is not None and (isinstance(maximum, bool) or not isinstance(maximum, int) or maximum <= 0):
+        raise ValueError("max_cycles must be null or a positive integer")
     if job["status"] not in STATUSES or job["billing_policy"] != "included_only":
         raise ValueError("invalid job policy or status")
     return job
 
 
-def save_job(path, job):
+def migrate_job(job):
+    migrated = dict(job)
+    schema = migrated.get("schema_version")
+    if schema == 1:
+        maximum = migrated.get("max_cycles")
+        if isinstance(maximum, bool) or not isinstance(maximum, int) or maximum <= 0:
+            raise ValueError("malformed v1 max_cycles")
+        migrated["schema_version"] = 2
+        migrated["max_cycles"] = None if maximum == 5 else maximum
+    return validate_job(migrated)
+
+
+def load_job(path):
+    raw = load_json(path)
+    migrated = migrate_job(raw)
+    if migrated != raw:
+        atomic_write_json(path, migrated)
+    return migrated
+
+
+def save_job(path, job, migrate=True):
     job["updated_at"] = utc_now()
-    validate_job(job)
+    if migrate:
+        migrated = migrate_job(job)
+        job.clear()
+        job.update(migrated)
+    else:
+        missing = set(REQUIRED_JOB_FIELDS) - set(job)
+        if missing or job.get("schema_version") != 1:
+            raise ValueError("invalid raw legacy job")
     atomic_write_json(path, job)
 
 
 class FileLock:
-    def __init__(self, path):
+    def __init__(self, path, timeout=0, poll_interval=0.05):
         self.path = Path(path)
         self.fd = None
+        self.timeout = timeout
+        self.poll_interval = poll_interval
 
     def __enter__(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            self.fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError as exc:
-            raise RuntimeError(f"job is already locked: {self.path}") from exc
+        deadline = time.monotonic() + self.timeout
+        while True:
+            try:
+                self.fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                break
+            except FileExistsError as exc:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(f"job is already locked: {self.path}") from exc
+                time.sleep(self.poll_interval)
         os.write(self.fd, str(os.getpid()).encode("ascii"))
         return self
 

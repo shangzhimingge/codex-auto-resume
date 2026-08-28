@@ -1,11 +1,11 @@
 ---
 name: codex-auto-resume
-description: Preserve and automatically resume long-running Codex coding tasks across ChatGPT usage-window interruptions. Use when a user explicitly asks to enable automatic continuation, auto-resume, 自动续作, 自动续跑, or when a named long task must continue after the Codex quota resets.
+description: Preflight every eligible Codex task and automatically resume it across ChatGPT usage-window interruptions using an exact thread UUID, Git snapshot, and checkpoint. Use implicitly at task start, when default activation requests a preflight, or when a user mentions automatic continuation, auto-resume, 自动续作, or 自动续跑.
 ---
 
 # Codex 自动续作
 
-仅在用户明确启用自动续作时注册任务。运行环境只使用 Python 标准库。
+在每个任务开始时执行一次确定性预检；符合条件时自动注册，不符合条件时返回 `SKIPPED`。运行环境只使用 Python 标准库。
 
 ## 初始化路径
 
@@ -21,7 +21,25 @@ $ORIGINAL_GOAL = "<ORIGINAL_GOAL>"
 
 始终引用 `$SKILL_ROOT` 下的脚本，并用双引号包围脚本路径、目标路径、目标文本和任务 ID。
 
-## 注册
+## 每任务预检
+
+先检查当前用户消息。若包含 `AUTO_RESUME=OFF` 或“本任务禁用自动续作”，执行并接受 `SKIPPED`：
+
+```powershell
+python "$SKILL_ROOT\scripts\preflight.py" --opt-out
+```
+
+若可信会话元数据提供原样规范小写的精确线程 UUID，且当前目录属于 Git 仓库，执行：
+
+```powershell
+python "$SKILL_ROOT\scripts\preflight.py" --thread-id "$THREAD_ID" --project "$PROJECT" --goal "$ORIGINAL_GOAL"
+```
+
+任一条件缺失时，不猜测 UUID、不向用户追问；执行缺少对应参数的预检并接受 `SKIPPED`。`THREAD_ID + PROJECT` 是唯一键，因此同一任务仅注册一次，目标措辞变化不会创建新任务。
+
+默认 `max_cycles=null`，续作循环次数无限。只有用户明确要求有限循环时才添加正整数 `--max-cycles`；零或负数属于错误。
+
+## 手动注册
 
 1. 获取当前线程的精确 UUID、项目 Git 根目录和原始目标。
 2. 在任意目录执行：
@@ -30,7 +48,7 @@ $ORIGINAL_GOAL = "<ORIGINAL_GOAL>"
 python "$SKILL_ROOT\scripts\register.py" --thread-id "$THREAD_ID" --project "$PROJECT" --goal "$ORIGINAL_GOAL"
 ```
 
-3. 保存命令返回的 `job_id`。让本地 Windows 守护进程在后台等待真实用量窗口重置。
+3. 保存命令返回的 `job_id`。让本地 Windows 守护进程在后台等待真实用量窗口重置。活动守护进程会被复用，失效 PID 会被重启，终态任务保持复用且不会重启。
 
 始终使用 `billing_policy=included_only`。忽略付费 credits 和 earned reset credits；不调用任何额度重置消费接口，不使用 API key 计费回退。
 

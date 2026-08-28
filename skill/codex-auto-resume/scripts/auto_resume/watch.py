@@ -5,7 +5,7 @@ from .checkpoints import read_checkpoint
 from .limits import LimitsError, read_limits, reset_deadline
 from .repo import fingerprint, repo_matches
 from .resume import ResumeError, ResumeInterrupted, resume_thread
-from .state import FileLock, load_json, save_job
+from .state import FileLock, load_job, save_job
 
 RESUME_PROMPT = """读取自动续作检查点：{checkpoint}
 继续完成原始目标：{goal}
@@ -17,7 +17,7 @@ RESUME_PROMPT = """读取自动续作检查点：{checkpoint}
 def decide_action(job, repo_ok, exhausted):
     if job["status"] == "DONE":
         return "done"
-    if job["completed_cycles"] >= job["max_cycles"]:
+    if job["max_cycles"] is not None and job["completed_cycles"] >= job["max_cycles"]:
         return "max_cycles"
     if not repo_ok:
         return "needs_user"
@@ -62,13 +62,13 @@ def run_job(job_path, codex_command=("codex",), sleep=time.sleep, now=time.time,
     job_path = Path(job_path).resolve()
     with FileLock(job_path.with_suffix(".lock")):
         while True:
-            job = load_json(job_path)
+            job = load_job(job_path)
             if _checkpoint_done(job):
                 _set(job_path, job, "DONE")
                 return "DONE"
             if job["status"] in {"DONE", "NEEDS_USER", "MAX_CYCLES", "ERROR"}:
                 return job["status"]
-            if job["completed_cycles"] >= job["max_cycles"]:
+            if job["max_cycles"] is not None and job["completed_cycles"] >= job["max_cycles"]:
                 _set(job_path, job, "MAX_CYCLES")
                 return "MAX_CYCLES"
             try:
@@ -105,7 +105,7 @@ def run_job(job_path, codex_command=("codex",), sleep=time.sleep, now=time.time,
                     supervisor_interval=min(job["poll_interval_seconds"], 10),
                 )
             except ResumeInterrupted as exc:
-                job = load_json(job_path)
+                job = load_job(job_path)
                 if exc.thread_verified:
                     job["completed_cycles"] += 1
                     job["expected_repo_snapshot"] = fingerprint(project)
@@ -122,13 +122,13 @@ def run_job(job_path, codex_command=("codex",), sleep=time.sleep, now=time.time,
             except (ResumeError, OSError) as exc:
                 _set(job_path, job, "NEEDS_USER", str(exc))
                 return "NEEDS_USER"
-            job = load_json(job_path)
+            job = load_job(job_path)
             job["completed_cycles"] += 1
             job["expected_repo_snapshot"] = fingerprint(project)
             if _checkpoint_done(job):
                 _set(job_path, job, "DONE")
                 return "DONE"
-            if job["completed_cycles"] >= job["max_cycles"]:
+            if job["max_cycles"] is not None and job["completed_cycles"] >= job["max_cycles"]:
                 _set(job_path, job, "MAX_CYCLES")
                 return "MAX_CYCLES"
             _set(job_path, job, "RUNNING")

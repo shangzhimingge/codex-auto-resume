@@ -1,4 +1,6 @@
 interface:
   display_name: "Codex 自动续作"
-  short_description: "用量窗口重置后从精确线程与检查点自动安全地继续长期任务"
-  default_prompt: "为此长任务注册自动续作，并在每个关键里程碑维护检查点。"
+  short_description: "为每个符合条件的任务预检，并在用量重置后自动安全续作"
+  default_prompt: "使用 $codex-auto-resume 为当前任务执行自动续作预检并维护检查点。"
+policy:
+  allow_implicit_invocation: true

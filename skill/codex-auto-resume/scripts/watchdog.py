@@ -7,7 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from auto_resume.limits import read_limits, reset_deadline
 from auto_resume.registering import start_watchdog
-from auto_resume.state import load_json, runtime_home
+from auto_resume.state import load_job, runtime_home
 from auto_resume.watch import run_job
 
 
@@ -40,7 +40,7 @@ def main(argv=None):
         return 0
     job_path = _job_path(args.job, args.codex_home)
     if args.command == "status":
-        print(json.dumps(load_json(job_path), ensure_ascii=False, indent=2))
+        print(json.dumps(load_job(job_path), ensure_ascii=False, indent=2))
         return 0
     if args.command == "start":
         print(json.dumps({"watchdog_pid": start_watchdog(job_path)}))

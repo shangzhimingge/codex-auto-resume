@@ -7,7 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from auto_resume.checkpoints import HEADINGS, read_checkpoint, write_checkpoint
 from auto_resume.repo import fingerprint
-from auto_resume.state import load_json, runtime_home, save_job
+from auto_resume.state import load_job, runtime_home, save_job
 
 
 def main(argv=None):
@@ -17,7 +17,7 @@ def main(argv=None):
     parser.add_argument("--set", action="append", default=[], metavar="HEADING=VALUE")
     args = parser.parse_args(argv)
     job_path = runtime_home(args.codex_home) / "jobs" / f"{args.job_id}.json"
-    job = load_json(job_path)
+    job = load_job(job_path)
     values = read_checkpoint(job["checkpoint_path"])
     for assignment in args.set:
         if "=" not in assignment:

@@ -5,6 +5,8 @@ import subprocess
 import threading
 from pathlib import Path
 
+from . import __version__
+
 
 class LimitsError(RuntimeError):
     pass
@@ -65,7 +67,7 @@ def read_limits(codex_command=("codex",), timeout=15):
                             errors="replace", shell=False)
     try:
         init = {"method": "initialize", "id": 1, "params": {
-            "clientInfo": {"name": "codex-auto-resume", "title": "Codex Auto Resume", "version": "1.0.0"},
+            "clientInfo": {"name": "codex-auto-resume", "title": "Codex Auto Resume", "version": __version__},
             "capabilities": {"experimentalApi": True},
         }}
         _request(proc, init, timeout)
