@@ -27,6 +27,8 @@ def main(argv=None):
     run.add_argument("--job", required=True)
     run.add_argument("--codex-home", type=Path)
     run.add_argument("--once", action="store_true")
+    run.add_argument("--nonce", help=argparse.SUPPRESS)
+    run.add_argument("--codex-command-json", help=argparse.SUPPRESS)
     status = sub.add_parser("status")
     status.add_argument("--job", required=True)
     status.add_argument("--codex-home", type=Path)
@@ -45,7 +47,8 @@ def main(argv=None):
     if args.command == "start":
         print(json.dumps({"watchdog_pid": start_watchdog(job_path)}))
         return 0
-    print(run_job(job_path, once=args.once))
+    codex_command = tuple(json.loads(args.codex_command_json)) if args.codex_command_json else ("codex",)
+    print(run_job(job_path, codex_command=codex_command, once=args.once, nonce=args.nonce))
     return 0
 
 

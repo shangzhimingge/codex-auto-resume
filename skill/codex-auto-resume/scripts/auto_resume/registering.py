@@ -1,14 +1,18 @@
 import hashlib
-import ctypes
+import json
 import os
 import subprocess
 import sys
+import time
+import threading
+import uuid
 from pathlib import Path
 
 from .checkpoints import write_checkpoint
 from .repo import fingerprint, validate_repo
-from .resume import validate_thread_id
+from .resume import _terminate_process_tree, validate_thread_id
 from .state import ACTIVE_STATES, FileLock, load_job, runtime_home, save_job, utc_now
+from .watchdog_lease import read_lease, watchdog_lease_is_live
 
 
 def windows_creation_flags():
@@ -21,45 +25,61 @@ def _job_id(thread_id, project):
     return hashlib.sha256(f"{thread_id}\0{project}".encode("utf-8")).hexdigest()[:24]
 
 
-def launch_watchdog(job_path):
+class WatchdogStartError(RuntimeError):
+    pass
+
+
+def _detach_popen(process):
+    if os.name == "nt":
+        process._handle.Close()
+        process._child_created = False
+    else:
+        threading.Thread(target=process.wait, daemon=True).start()
+
+
+def launch_watchdog(job_path, codex_command=None, handshake_timeout=10):
     job_path = Path(job_path).resolve()
     job = load_job(job_path)
     watchdog = Path(__file__).parents[1] / "watchdog.py"
+    nonce = uuid.uuid4().hex
+    argv = [sys.executable, str(watchdog), "run", "--job", str(job_path), "--nonce", nonce]
+    if codex_command is not None:
+        argv.extend(("--codex-command-json", json.dumps(list(codex_command))))
     process = subprocess.Popen(
-        [sys.executable, str(watchdog), "run", "--job", str(job_path)],
+        argv,
         cwd=job["project_root"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL, close_fds=True, creationflags=windows_creation_flags(),
         shell=False,
     )
-    job["watchdog_pid"] = process.pid
-    save_job(job_path, job)
+    deadline = time.monotonic() + handshake_timeout
+    verified = False
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            break
+        lease = read_lease(job_path)
+        if (lease and lease.get("nonce") == nonce and lease.get("pid") == process.pid and
+                watchdog_lease_is_live(job_path, process.pid, stale_after=max(5, handshake_timeout)) and
+                load_job(job_path).get("watchdog_pid") == process.pid):
+            time.sleep(0.1)
+            if (process.poll() is None and
+                    watchdog_lease_is_live(job_path, process.pid, stale_after=max(5, handshake_timeout))):
+                verified = True
+                break
+        time.sleep(0.05)
+    if not verified:
+        if process.poll() is None:
+            _terminate_process_tree(process)
+        raise WatchdogStartError("watchdog exited before completing its startup handshake")
+    _detach_popen(process)
     return process.pid
 
 
 start_watchdog = launch_watchdog
 
 
-def process_is_running(pid):
-    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
-        return False
-    if os.name == "nt":
-        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
-        if not handle:
-            return False
-        try:
-            code = ctypes.c_ulong()
-            return bool(ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == 259
-        finally:
-            ctypes.windll.kernel32.CloseHandle(handle)
-    try:
-        os.kill(pid, 0)
-        return True
-    except (OSError, ProcessLookupError):
-        return False
-
-
 def _register_job(thread_id, project, original_goal, codex_home=None, max_cycles=None,
-                 poll_interval_seconds=60, safety_margin_seconds=30, start_watchdog=True):
+                 poll_interval_seconds=60, safety_margin_seconds=30, start_watchdog=True,
+                 watchdog_codex_command=None):
     thread_id = validate_thread_id(thread_id)
     project = validate_repo(project)
     if not original_goal.strip():
@@ -82,8 +102,11 @@ def _register_job(thread_id, project, original_goal, codex_home=None, max_cycles
                     Path(existing.get("project_root", "")) == project)
             if not same:
                 raise ValueError(f"job id collision: {job_id}")
-            if start_watchdog and existing.get("status") in ACTIVE_STATES and not process_is_running(existing.get("watchdog_pid")):
-                launch_watchdog(job_path)
+            stale_after = max(30, existing["poll_interval_seconds"] * 3)
+            live_watchdog = watchdog_lease_is_live(
+                job_path, existing.get("watchdog_pid"), stale_after=stale_after)
+            if start_watchdog and existing.get("status") in ACTIVE_STATES and not live_watchdog:
+                launch_watchdog(job_path, codex_command=watchdog_codex_command)
                 existing = load_job(job_path)
             return existing, "REUSED"
         created = utc_now()
@@ -117,7 +140,7 @@ def _register_job(thread_id, project, original_goal, codex_home=None, max_cycles
         })
         save_job(job_path, job)
         if start_watchdog:
-            launch_watchdog(job_path)
+            launch_watchdog(job_path, codex_command=watchdog_codex_command)
             job = load_job(job_path)
         return job, "REGISTERED"
 

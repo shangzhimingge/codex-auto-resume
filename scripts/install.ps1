@@ -39,12 +39,24 @@ if ($DisableDefaultActivation) {
 
 New-Item -ItemType Directory -Force -Path $CodexHome | Out-Null
 $TemporaryAgents = Join-Path $CodexHome ".AGENTS.md.install-$PID.tmp"
-[System.IO.File]::WriteAllText($TemporaryAgents, $Updated, [System.Text.UTF8Encoding]::new($false))
-Move-Item -LiteralPath $TemporaryAgents -Destination $AgentsPath -Force
+$AgentsBackup = "$AgentsPath.codex-auto-resume.backup"
+if ($Updated -cne $Existing) {
+    if (-not (Test-Path -LiteralPath $AgentsBackup)) {
+        $OriginalBytes = if (Test-Path -LiteralPath $AgentsPath) {
+            [System.IO.File]::ReadAllBytes($AgentsPath)
+        } else {
+            [byte[]]::new(0)
+        }
+        [System.IO.File]::WriteAllBytes($AgentsBackup, $OriginalBytes)
+    }
+    [System.IO.File]::WriteAllText($TemporaryAgents, $Updated, [System.Text.UTF8Encoding]::new($false))
+    Move-Item -LiteralPath $TemporaryAgents -Destination $AgentsPath -Force
+}
 
 [pscustomobject]@{
     skill = $Destination
     agents = $AgentsPath
+    agents_backup = $AgentsBackup
     default_activation = -not $DisableDefaultActivation
     version = (Get-Content -LiteralPath (Join-Path $Destination "VERSION") -Raw).Trim()
 } | ConvertTo-Json -Compress

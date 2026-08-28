@@ -67,9 +67,17 @@ class RegisterTests(unittest.TestCase):
                         "checkpoint_path": str(Path(tmp) / "c.md"), "expected_repo_snapshot": {},
                         "created_at": now, "updated_at": now, "last_error": None})
             from auto_resume.state import save_job
+            job["watchdog_pid"] = 1234
             save_job(job_path, job)
             fake_process = mock.Mock(pid=1234)
-            with mock.patch("auto_resume.registering.subprocess.Popen", return_value=fake_process) as popen:
+            fake_process.poll.return_value = None
+            fake_uuid = mock.Mock(hex="nonce")
+            lease = {"nonce": "nonce", "pid": 1234}
+            with mock.patch("auto_resume.registering.subprocess.Popen", return_value=fake_process) as popen, \
+                 mock.patch("auto_resume.registering.uuid.uuid4", return_value=fake_uuid), \
+                 mock.patch("auto_resume.registering.read_lease", return_value=lease), \
+                 mock.patch("auto_resume.registering.watchdog_lease_is_live", return_value=True), \
+                 mock.patch("auto_resume.registering._detach_popen"):
                 self.assertEqual(1234, start_watchdog(job_path))
             argv = popen.call_args.args[0]
             self.assertEqual("run", argv[2])

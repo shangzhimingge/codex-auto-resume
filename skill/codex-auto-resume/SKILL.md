@@ -48,7 +48,7 @@ python "$SKILL_ROOT\scripts\preflight.py" --thread-id "$THREAD_ID" --project "$P
 python "$SKILL_ROOT\scripts\register.py" --thread-id "$THREAD_ID" --project "$PROJECT" --goal "$ORIGINAL_GOAL"
 ```
 
-3. 保存命令返回的 `job_id`。让本地 Windows 守护进程在后台等待真实用量窗口重置。活动守护进程会被复用，失效 PID 会被重启，终态任务保持复用且不会重启。
+3. 保存命令返回的 `job_id`。让本地 Windows 守护进程在后台等待真实用量窗口重置。仅在 nonce、心跳和进程创建身份均匹配时复用活动守护进程；失效实例会在完成启动握手后更新 PID。终态任务保持复用且不会重启。
 
 始终使用 `billing_policy=included_only`。忽略付费 credits 和 earned reset credits；不调用任何额度重置消费接口，不使用 API key 计费回退。
 

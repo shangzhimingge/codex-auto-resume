@@ -98,14 +98,14 @@ class V110Tests(unittest.TestCase):
             job_path = home / "auto-resume" / "jobs" / f"{first['job_id']}.json"
             first["watchdog_pid"] = 111
             save_job(job_path, first)
-            with mock.patch("auto_resume.registering.process_is_running", return_value=True), \
+            with mock.patch("auto_resume.registering.watchdog_lease_is_live", return_value=True), \
                  mock.patch("auto_resume.registering.launch_watchdog") as launch:
                 register_job(thread_id, project, "new goal", home, start_watchdog=True)
                 launch.assert_not_called()
-            with mock.patch("auto_resume.registering.process_is_running", return_value=False), \
+            with mock.patch("auto_resume.registering.watchdog_lease_is_live", return_value=False), \
                  mock.patch("auto_resume.registering.launch_watchdog", return_value=222) as launch:
                 register_job(thread_id, project, "newer goal", home, start_watchdog=True)
-                launch.assert_called_once_with(job_path)
+                launch.assert_called_once_with(job_path, codex_command=None)
 
     def test_concurrent_registration_creates_one_job(self):
         with tempfile.TemporaryDirectory() as tmp:

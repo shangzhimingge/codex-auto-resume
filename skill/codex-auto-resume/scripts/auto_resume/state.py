@@ -2,8 +2,11 @@ import json
 import os
 import tempfile
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+
+from .processes import process_identity, process_is_running
 
 STATUSES = {
     "REGISTERED", "RUNNING", "WAITING_RESET", "RESUMING", "DONE",
@@ -117,11 +120,49 @@ class FileLock:
                 self.fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 break
             except FileExistsError as exc:
+                if self._recover_proven_stale():
+                    continue
                 if time.monotonic() >= deadline:
                     raise RuntimeError(f"job is already locked: {self.path}") from exc
                 time.sleep(self.poll_interval)
-        os.write(self.fd, str(os.getpid()).encode("ascii"))
+        owner = {
+            "pid": os.getpid(),
+            "process_identity": process_identity(os.getpid()),
+            "nonce": uuid.uuid4().hex,
+            "created_at": time.time(),
+        }
+        os.write(self.fd, json.dumps(owner).encode("utf-8"))
         return self
+
+    def _recover_proven_stale(self):
+        try:
+            before = self.path.read_bytes()
+        except OSError:
+            return False
+        try:
+            owner = json.loads(before.decode("utf-8"))
+            pid = owner.get("pid")
+            identity = owner.get("process_identity")
+            if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+                return False
+            if identity is not None and not isinstance(identity, str):
+                return False
+            stale = not process_is_running(pid, identity)
+        except (ValueError, UnicodeDecodeError, AttributeError):
+            try:
+                pid = int(before.decode("ascii"))
+            except (ValueError, UnicodeDecodeError):
+                return False
+            stale = not process_is_running(pid)
+        if not stale:
+            return False
+        try:
+            if self.path.read_bytes() != before:
+                return False
+            self.path.unlink()
+            return True
+        except OSError:
+            return False
 
     def __exit__(self, *_):
         if self.fd is not None:

@@ -8,11 +8,12 @@
 - 使用 `initialize` → `initialized` → `account/rateLimits/read` 协议读取用量。
 - 同时判断 primary 和 secondary 窗口，等待所有已耗尽窗口中最晚的重置时间。
 - 续作期间持续复查订阅用量；一旦窗口耗尽或服务报告已触达限额，立即终止受管进程树并回到等待状态。
-- 默认最多续作 5 次；支持原子状态写入、任务锁和 Git 工作区冲突检测。
+- 支持原子状态写入、任务锁和 Git 工作区冲突检测。
 - 只使用订阅内用量：忽略 credits，不触发额度重置消费，也不切换到 API 计费。
 - 纯 Python 标准库，无第三方依赖。
 - 默认无限续作；可用正整数 `--max-cycles` 显式设置有限循环。
-- 按 `THREAD_ID + PROJECT` 幂等去重，并发注册只生成一个任务；复用有效守护进程并重启失效 PID。
+- 按 `THREAD_ID + PROJECT` 幂等去重，并发注册只生成一个任务；复用有效守护进程并重启失效租约。
+- 守护进程通过 nonce、心跳和进程创建身份完成启动握手；只有证明锁所有者已失效后才恢复遗留锁。
 
 ## 环境要求
 
@@ -29,7 +30,7 @@
 .\scripts\install.ps1
 ```
 
-安装器会把 Skill 复制到 `%CODEX_HOME%\skills\codex-auto-resume`，并只更新全局 `%CODEX_HOME%\AGENTS.md` 中自己的托管块；原有内容及 Sol–Luna 托管块保持不变。未设置 `CODEX_HOME` 时使用 `%USERPROFILE%\.codex`。
+安装器会把 Skill 复制到 `%CODEX_HOME%\skills\codex-auto-resume`，并只更新全局 `%CODEX_HOME%\AGENTS.md` 中自己的托管块；原有内容及 Sol–Luna 托管块保持不变。首次变更托管块前，会创建字节一致且后续不覆盖的 `AGENTS.md.codex-auto-resume.backup`。未设置 `CODEX_HOME` 时使用 `%USERPROFILE%\.codex`。
 
 安装 Skill 但关闭默认每任务预检：
 
