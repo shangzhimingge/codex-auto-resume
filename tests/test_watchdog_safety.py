@@ -1,5 +1,6 @@
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -20,6 +21,26 @@ from auto_resume.watchdog_lease import lease_path, watchdog_lease_is_live
 
 
 class WatchdogSafetyTests(unittest.TestCase):
+    def terminate_test_process(self, pid):
+        identity = process_identity(pid)
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        else:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                return
+        deadline = time.monotonic() + 5
+        while process_is_running(pid, identity) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if process_is_running(pid, identity):
+            try:
+                force_signal = signal.SIGTERM if os.name == "nt" else signal.SIGKILL
+                os.kill(pid, force_signal)
+            except ProcessLookupError:
+                pass
+
     def make_repo(self, path):
         subprocess.run(["git", "init", "-q"], cwd=path, check=True)
         subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=path, check=True)
@@ -118,14 +139,7 @@ class WatchdogSafetyTests(unittest.TestCase):
                 else:
                     os.environ["FAKE_LIMITS"] = previous
                 if 'pid' in locals() and process_is_running(pid):
-                    identity = process_identity(pid)
-                    subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-                    deadline = time.monotonic() + 5
-                    while process_is_running(pid, identity) and time.monotonic() < deadline:
-                        time.sleep(0.05)
-                    if process_is_running(pid, identity):
-                        os.kill(pid, __import__("signal").SIGTERM)
+                    self.terminate_test_process(pid)
                     lock = job_path.with_suffix(".lock")
                     with FileLock(lock, timeout=5):
                         pass
@@ -164,14 +178,7 @@ class WatchdogSafetyTests(unittest.TestCase):
                 else:
                     os.environ["FAKE_LIMITS"] = old
                 if restarted_pid and process_is_running(restarted_pid):
-                    identity = process_identity(restarted_pid)
-                    subprocess.run(["taskkill", "/PID", str(restarted_pid), "/T", "/F"],
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-                    deadline = time.monotonic() + 5
-                    while process_is_running(restarted_pid, identity) and time.monotonic() < deadline:
-                        time.sleep(0.05)
-                    if process_is_running(restarted_pid, identity):
-                        os.kill(restarted_pid, __import__("signal").SIGTERM)
+                    self.terminate_test_process(restarted_pid)
                     with FileLock(job_path.with_suffix(".lock"), timeout=5):
                         pass
 

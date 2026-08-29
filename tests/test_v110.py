@@ -105,7 +105,7 @@ class V110Tests(unittest.TestCase):
             with mock.patch("auto_resume.registering.watchdog_lease_is_live", return_value=False), \
                  mock.patch("auto_resume.registering.launch_watchdog", return_value=222) as launch:
                 register_job(thread_id, project, "newer goal", home, start_watchdog=True)
-                launch.assert_called_once_with(job_path, codex_command=None)
+                launch.assert_called_once_with(job_path.resolve(), codex_command=None)
 
     def test_concurrent_registration_creates_one_job(self):
         with tempfile.TemporaryDirectory() as tmp:

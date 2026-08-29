@@ -47,7 +47,7 @@ class V120DaemonTests(unittest.TestCase):
             with mock.patch("auto_resume.daemon.launch_watchdog", return_value=321) as launch:
                 result = daemon.scan_once(home)
             self.assertEqual(1, result["started"])
-            launch.assert_called_once_with(stale_path)
+            launch.assert_called_once_with(stale_path.resolve())
 
     def test_non_linux_unix_process_identity_uses_ps_fallback(self):
         processes = importlib.import_module("auto_resume.processes")

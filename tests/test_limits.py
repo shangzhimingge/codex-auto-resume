@@ -2,6 +2,7 @@ import os
 import json
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -62,7 +63,7 @@ class LimitsTests(unittest.TestCase):
         entry.write_text("", encoding="utf-8")
         def locate(name):
             return str(wrapper) if name == "codex.cmd" else r"C:\\Node\\node.exe"
-        with mock.patch("auto_resume.limits.os.name", "nt"), \
+        with mock.patch("auto_resume.limits.os", types.SimpleNamespace(name="nt")), \
              mock.patch("auto_resume.limits.shutil.which", side_effect=locate):
             self.assertEqual([r"C:\\Node\\node.exe", str(entry)], _normalize_command(("codex",)))
 

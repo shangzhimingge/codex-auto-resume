@@ -176,8 +176,9 @@ class V121Tests(unittest.TestCase):
                 result = core.install(ROOT, home, platform_name="darwin",
                                       skip_prerequisites=True, service=adapter)
             plist = Path(result["manifest"]["service"]["config_path"]).read_text(encoding="utf-8")
-            self.assertIn(str(home / "auto-resume" / "logs" / "daemon.stdout.log"), plist)
-            self.assertIn(str(home / "auto-resume" / "logs" / "daemon.stderr.log"), plist)
+            canonical_home = home.resolve()
+            self.assertIn(str(canonical_home / "auto-resume" / "logs" / "daemon.stdout.log"), plist)
+            self.assertIn(str(canonical_home / "auto-resume" / "logs" / "daemon.stderr.log"), plist)
 
 
 if __name__ == "__main__":

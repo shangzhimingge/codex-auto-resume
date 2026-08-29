@@ -53,7 +53,14 @@ class SkillDocumentationTests(unittest.TestCase):
             ])
             env = os.environ.copy()
             env["PYTHONUTF8"] = "1"
-            run = subprocess.run(["powershell.exe", "-NoProfile", "-Command", script],
+            powershell = (
+                shutil.which("pwsh")
+                or shutil.which("powershell.exe")
+                or shutil.which("powershell")
+            )
+            if powershell is None:
+                self.skipTest("PowerShell is not available on this runner")
+            run = subprocess.run([powershell, "-NoProfile", "-Command", script],
                                  cwd=project, text=True, encoding="utf-8", errors="replace",
                                  capture_output=True, env=env, shell=False)
             self.assertEqual(0, run.returncode, run.stderr)
