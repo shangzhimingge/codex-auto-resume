@@ -51,6 +51,14 @@ class StateCheckpointTests(unittest.TestCase):
             with FileLock(path):
                 pass
 
+    def test_lock_release_retries_transient_windows_file_sharing_error(self):
+        lock = FileLock("job.lock", poll_interval=0)
+        with mock.patch.object(Path, "unlink", side_effect=[PermissionError("busy"), None]) as unlink, \
+             mock.patch("auto_resume.state.time.sleep") as sleep:
+            lock._unlink_with_retry()
+        self.assertEqual(2, unlink.call_count)
+        sleep.assert_called_once_with(0)
+
 
 if __name__ == "__main__":
     unittest.main()

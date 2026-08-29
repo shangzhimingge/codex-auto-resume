@@ -164,12 +164,22 @@ class FileLock:
         except BaseException:
             os.close(self.fd)
             self.fd = None
-            try:
-                self.path.unlink()
-            except FileNotFoundError:
-                pass
+            self._unlink_with_retry()
             raise
         return self
+
+    def _unlink_with_retry(self):
+        deadline = time.monotonic() + max(1.0, self.poll_interval * 4)
+        while True:
+            try:
+                self.path.unlink()
+                return
+            except FileNotFoundError:
+                return
+            except PermissionError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(self.poll_interval)
 
     def _recover_proven_stale(self):
         try:
@@ -204,7 +214,5 @@ class FileLock:
     def __exit__(self, *_):
         if self.fd is not None:
             os.close(self.fd)
-        try:
-            self.path.unlink()
-        except FileNotFoundError:
-            pass
+            self.fd = None
+        self._unlink_with_retry()

@@ -17,12 +17,12 @@ class SkillDocumentationTests(unittest.TestCase):
         text = (SOURCE_SKILL / "SKILL.md").read_text(encoding="utf-8")
         root_lines = [
             '$CODEX_ROOT = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME ".codex" }',
-            '$SKILL_ROOT = Split-Path -Parent (Resolve-Path (Join-Path $CODEX_ROOT "skills\\codex-auto-resume\\SKILL.md"))',
+            '$SKILL_ROOT = Split-Path -Parent (Resolve-Path (Join-Path $CODEX_ROOT "skills/codex-auto-resume/SKILL.md"))',
         ]
         for line in root_lines:
             self.assertIn(line, text)
         match = re.search(
-            r'^python "\$SKILL_ROOT\\scripts\\register\.py" --thread-id "\$THREAD_ID" '
+            r'^python "\$SKILL_ROOT/scripts/register\.py" --thread-id "\$THREAD_ID" '
             r'--project "\$PROJECT" --goal "\$ORIGINAL_GOAL"$', text, re.MULTILINE)
         self.assertIsNotNone(match)
 
@@ -74,7 +74,7 @@ class SkillDocumentationTests(unittest.TestCase):
         invocations = re.findall(r'^python .+?\.py.*$', text, re.MULTILINE)
         self.assertGreaterEqual(len(invocations), 5)
         for invocation in invocations:
-            self.assertRegex(invocation, r'^python "\$SKILL_ROOT\\scripts\\[^\"]+\.py"')
+            self.assertRegex(invocation, r'^python "\$SKILL_ROOT/scripts/[^\"]+\.py"')
             self.assertNotRegex(invocation, r'--(?:project|goal) <')
 
 

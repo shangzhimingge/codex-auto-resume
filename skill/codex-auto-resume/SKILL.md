@@ -13,7 +13,7 @@ description: Preflight every eligible Codex task and automatically resume it acr
 
 ```powershell
 $CODEX_ROOT = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME ".codex" }
-$SKILL_ROOT = Split-Path -Parent (Resolve-Path (Join-Path $CODEX_ROOT "skills\codex-auto-resume\SKILL.md"))
+$SKILL_ROOT = Split-Path -Parent (Resolve-Path (Join-Path $CODEX_ROOT "skills/codex-auto-resume/SKILL.md"))
 $THREAD_ID = "<UUID>"
 $PROJECT = (Resolve-Path "<TARGET_GIT_PROJECT>").Path
 $ORIGINAL_GOAL = "<ORIGINAL_GOAL>"
@@ -26,13 +26,13 @@ $ORIGINAL_GOAL = "<ORIGINAL_GOAL>"
 先检查当前用户消息。若包含 `AUTO_RESUME=OFF` 或“本任务禁用自动续作”，执行并接受 `SKIPPED`：
 
 ```powershell
-python "$SKILL_ROOT\scripts\auto_resume.py" preflight --opt-out
+python "$SKILL_ROOT/scripts/auto_resume.py" preflight --opt-out
 ```
 
 若可信会话元数据提供原样规范小写的精确线程 UUID，且当前目录属于 Git 仓库，执行：
 
 ```powershell
-python "$SKILL_ROOT\scripts\auto_resume.py" preflight --thread-id "$THREAD_ID" --project "$PROJECT" --goal "$ORIGINAL_GOAL"
+python "$SKILL_ROOT/scripts/auto_resume.py" preflight --thread-id "$THREAD_ID" --project "$PROJECT" --goal "$ORIGINAL_GOAL"
 ```
 
 任一条件缺失时，不猜测 UUID、不向用户追问；执行缺少对应参数的预检并接受 `SKIPPED`。`THREAD_ID + PROJECT` 是唯一键，因此同一任务仅注册一次，目标措辞变化不会创建新任务。
@@ -45,7 +45,7 @@ python "$SKILL_ROOT\scripts\auto_resume.py" preflight --thread-id "$THREAD_ID" -
 2. 在任意目录执行：
 
 ```powershell
-python "$SKILL_ROOT\scripts\register.py" --thread-id "$THREAD_ID" --project "$PROJECT" --goal "$ORIGINAL_GOAL"
+python "$SKILL_ROOT/scripts/register.py" --thread-id "$THREAD_ID" --project "$PROJECT" --goal "$ORIGINAL_GOAL"
 ```
 
 3. 保存命令返回的 `job_id`。让平台用户级服务与本地守护进程在后台等待真实用量窗口重置。Windows 使用任务计划程序，macOS 使用 LaunchAgent，Linux 使用 systemd 用户单元且不启用 linger。仅在 nonce、心跳和进程创建身份均匹配时复用活动守护进程；失效实例会在完成启动握手后更新 PID。终态任务保持复用且不会重启。
@@ -57,7 +57,7 @@ python "$SKILL_ROOT\scripts\register.py" --thread-id "$THREAD_ID" --project "$PR
 在每个关键里程碑后，以及长构建、大型测试、迁移和批量编辑前，执行：
 
 ```powershell
-python "$SKILL_ROOT\scripts\checkpoint.py" --job-id "$JOB_ID" `
+python "$SKILL_ROOT/scripts/checkpoint.py" --job-id "$JOB_ID" `
   --set "COMPLETED=<COMPLETED>" `
   --set "CURRENT_STATE=<CURRENT_STATE>" `
   --set "FILES_CHANGED=<FILES_CHANGED>" `
@@ -73,15 +73,15 @@ python "$SKILL_ROOT\scripts\checkpoint.py" --job-id "$JOB_ID" `
 完整目标满足且最终验证通过后，执行：
 
 ```powershell
-python "$SKILL_ROOT\scripts\checkpoint.py" --job-id "$JOB_ID" --set "AUTO_RESUME_STATUS=DONE"
+python "$SKILL_ROOT/scripts/checkpoint.py" --job-id "$JOB_ID" --set "AUTO_RESUME_STATUS=DONE"
 ```
 
 ## 查看状态与诊断
 
 ```powershell
-python "$SKILL_ROOT\scripts\auto_resume.py" status --job "$JOB_ID"
-python "$SKILL_ROOT\scripts\auto_resume.py" probe-limits
-python "$SKILL_ROOT\scripts\auto_resume.py" daemon status
+python "$SKILL_ROOT/scripts/auto_resume.py" status --job "$JOB_ID"
+python "$SKILL_ROOT/scripts/auto_resume.py" probe-limits
+python "$SKILL_ROOT/scripts/auto_resume.py" daemon status
 ```
 
 守护进程严格执行 app-server 的 `initialize` → `initialized` → `account/rateLimits/read` 握手，优先读取 `rateLimitsByLimitId.codex`，并同时判断 primary 与 secondary 窗口。额度数据缺失或畸形时按关闭状态处理。
