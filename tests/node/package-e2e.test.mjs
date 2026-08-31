@@ -30,11 +30,13 @@ const expectedFiles = [
   'skill/codex-auto-resume/scripts/auto_resume/checkpoints.py',
   'skill/codex-auto-resume/scripts/auto_resume/cli.py',
   'skill/codex-auto-resume/scripts/auto_resume/daemon.py',
+  'skill/codex-auto-resume/scripts/auto_resume/handoffs.py',
   'skill/codex-auto-resume/scripts/auto_resume/limits.py',
   'skill/codex-auto-resume/scripts/auto_resume/processes.py',
   'skill/codex-auto-resume/scripts/auto_resume/registering.py',
   'skill/codex-auto-resume/scripts/auto_resume/repo.py',
   'skill/codex-auto-resume/scripts/auto_resume/resume.py',
+  'skill/codex-auto-resume/scripts/auto_resume/session_tasks.py',
   'skill/codex-auto-resume/scripts/auto_resume/state.py',
   'skill/codex-auto-resume/scripts/auto_resume/watch.py',
   'skill/codex-auto-resume/scripts/auto_resume/watchdog_lease.py',
@@ -85,7 +87,7 @@ test('packed tarball installs and its public bin performs an isolated simulated 
     assertSucceeded(packed);
     const metadata = JSON.parse(packed.stdout)[0];
     const publishedFiles = metadata.files.map((item) => item.path).sort();
-    assert.equal(publishedFiles.length, 35);
+    assert.equal(publishedFiles.length, 37);
     assert.deepEqual(publishedFiles, expectedFiles);
     assert.equal(
       publishedFiles.some((file) => /(^|\/)(tests|docs\/superpowers|__pycache__)(\/|$)|\.py[co]$/.test(file)),

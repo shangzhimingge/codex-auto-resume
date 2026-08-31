@@ -22,10 +22,32 @@ class ResumeInterrupted(ResumeError):
 
 
 class ResumeResult:
-    def __init__(self, completed, returncode, events):
+    def __init__(self, completed, returncode, events, final_text=None):
         self.completed = completed
         self.returncode = returncode
         self.events = events
+        self.final_text = final_text
+
+
+def _final_text(events):
+    for event in reversed(events):
+        if not isinstance(event, dict):
+            continue
+        pending = [event]
+        examined = 0
+        while pending and examined < 256:
+            value = pending.pop()
+            examined += 1
+            if isinstance(value, dict):
+                kind = value.get("type")
+                if kind in {"agent_message", "message"} or "last_agent_message" in value:
+                    for key in ("last_agent_message", "message", "text", "output"):
+                        if isinstance(value.get(key), str) and value[key].strip():
+                            return value[key].strip()
+                pending.extend(reversed(list(value.values())))
+            elif isinstance(value, list):
+                pending.extend(reversed(value))
+    return None
 
 
 def validate_thread_id(thread_id):
@@ -123,7 +145,7 @@ def resume_thread(codex_command, thread_id, prompt, project, env=None,
         completed = returncode == 0 and any(item.get("type") == "turn.completed" for item in events)
         if returncode != 0:
             raise ResumeError(f"Codex resume exited with {returncode}: {''.join(stderr_lines).strip()}")
-        return ResumeResult(completed, returncode, events)
+        return ResumeResult(completed, returncode, events, _final_text(events))
     finally:
         if proc.poll() is None:
             _terminate_process_tree(proc)

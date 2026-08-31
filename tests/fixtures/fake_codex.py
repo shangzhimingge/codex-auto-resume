@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import time
+import subprocess
 
 
 def emit(value):
@@ -33,9 +34,35 @@ def exec_resume():
     if record:
         with open(record, "w", encoding="utf-8") as handle:
             json.dump(sys.argv[1:], handle)
+    env_record = os.environ.get("FAKE_ENV_LOG")
+    if env_record:
+        with open(env_record, "w", encoding="utf-8") as handle:
+            json.dump({key: os.environ.get(key) for key in (
+                "CODEX_AUTO_RESUME_JOB_ID", "CODEX_AUTO_RESUME_TASK_ID")}, handle)
     thread_id = os.environ.get("FAKE_THREAD_ID", sys.argv[3])
     emit({"type": "thread.started", "thread_id": thread_id})
+    checkpoint_command = os.environ.get("FAKE_CHECKPOINT_COMMAND_JSON")
+    if checkpoint_command:
+        subprocess.run(json.loads(checkpoint_command), check=True)
+    signal_path = os.environ.get("FAKE_AFTER_CHECKPOINT_SIGNAL")
+    if signal_path:
+        with open(signal_path, "w", encoding="utf-8") as handle:
+            handle.write("ready")
+    release_path = os.environ.get("FAKE_RESULT_RELEASE")
+    if release_path:
+        deadline = time.monotonic() + 10
+        while not os.path.exists(release_path):
+            if time.monotonic() >= deadline:
+                return 3
+            time.sleep(0.01)
     time.sleep(float(os.environ.get("FAKE_RESUME_SLEEP", "0")))
+    message = os.environ.get("FAKE_AGENT_MESSAGE")
+    if message:
+        event = {"type": "item.completed", "item": {"type": "agent_message", "text": message}}
+        artifact = os.environ.get("FAKE_ARTIFACT_PATH")
+        if artifact:
+            event["item"]["artifact_path"] = artifact
+        emit(event)
     emit({"type": os.environ.get("FAKE_FINAL_EVENT", "turn.completed")})
     return int(os.environ.get("FAKE_EXIT", "0"))
 

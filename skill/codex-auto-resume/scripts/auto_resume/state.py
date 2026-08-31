@@ -1,8 +1,10 @@
 import json
 import os
+import hashlib
 import tempfile
 import time
 import uuid
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -10,11 +12,15 @@ from .processes import process_identity, process_is_running
 
 STATUSES = {
     "REGISTERED", "RUNNING", "WAITING_RESET", "RESUMING", "DONE",
-    "NEEDS_USER", "MAX_CYCLES", "ERROR",
+    "NEEDS_USER", "MAX_CYCLES", "ERROR", "SUPERSEDED",
 }
 ACTIVE_STATES = {"REGISTERED", "RUNNING", "WAITING_RESET", "RESUMING"}
+TERMINAL_STATES = {"DONE", "SUPERSEDED", "NEEDS_USER", "MAX_CYCLES", "ERROR"}
 REQUIRED_JOB_FIELDS = (
-    "schema_version", "job_id", "thread_id", "project_root", "original_goal",
+    "schema_version", "job_id", "thread_id", "task_id", "thread_source",
+    "parent_thread_id", "parent_task_id", "root_thread_id", "agent_path",
+    "rollout_path", "goal_source", "fork_timestamp", "association_source",
+    "superseded_by", "project_root", "original_goal",
     "status", "billing_policy", "limit_id", "max_cycles", "completed_cycles",
     "poll_interval_seconds", "safety_margin_seconds", "checkpoint_path",
     "expected_repo_snapshot", "watchdog_pid", "created_at", "updated_at", "last_error",
@@ -39,8 +45,9 @@ def ensure_runtime_layout(explicit=None, best_effort=False):
         "checkpoints": root / "checkpoints",
         "logs": root / "logs",
         "state": root / "state",
+        "handoffs": root / "handoffs",
     }
-    for name in ("jobs", "checkpoints", "logs", "state"):
+    for name in ("jobs", "checkpoints", "logs", "state", "handoffs"):
         layout[name].mkdir(parents=True, exist_ok=True)
     migrations = {
         root / "daemon-state.json": layout["state"] / "daemon-state.json",
@@ -90,7 +97,7 @@ def validate_job(job):
     extra = set(job) - set(REQUIRED_JOB_FIELDS)
     if missing or extra:
         raise ValueError(f"invalid job fields: missing={sorted(missing)}, extra={sorted(extra)}")
-    if job.get("schema_version") != 2:
+    if job.get("schema_version") != 3:
         raise ValueError("unsupported job schema")
     maximum = job.get("max_cycles")
     if maximum is not None and (isinstance(maximum, bool) or not isinstance(maximum, int) or maximum <= 0):
@@ -107,17 +114,85 @@ def migrate_job(job):
         maximum = migrated.get("max_cycles")
         if isinstance(maximum, bool) or not isinstance(maximum, int) or maximum <= 0:
             raise ValueError("malformed v1 max_cycles")
-        migrated["schema_version"] = 2
         migrated["max_cycles"] = None if maximum == 5 else maximum
+        schema = 2
+    if schema == 2:
+        thread_id = migrated.get("thread_id")
+        migrated.update({
+            "schema_version": 3,
+            "task_id": thread_id,
+            "thread_source": "legacy",
+            "parent_thread_id": None,
+            "parent_task_id": None,
+            "root_thread_id": thread_id,
+            "agent_path": None,
+            "rollout_path": None,
+            "goal_source": "legacy",
+            "fork_timestamp": None,
+            "association_source": "legacy",
+            "superseded_by": None,
+        })
+    if migrated.get("schema_version") == 3:
+        # Early 1.3.0 builds used v3 before lineage association provenance was
+        # persisted.  Normalize them in place rather than stranding jobs.
+        migrated.setdefault("fork_timestamp", None)
+        migrated.setdefault("association_source", "legacy")
     return validate_job(migrated)
 
 
-def load_job(path):
+def job_state_lock_path(job_path):
+    return Path(job_path).with_suffix(".state.lock")
+
+
+def project_mutex_path(codex_home, project_root):
+    layout = ensure_runtime_layout(codex_home)
+    key = hashlib.sha256(str(Path(project_root).resolve()).encode("utf-8")).hexdigest()[:24]
+    return layout["state"] / f"project-{key}.lock"
+
+
+def project_lease_path(codex_home, project_root):
+    return project_mutex_path(codex_home, project_root).with_suffix(".resume.json")
+
+
+def merge_status(current, requested):
+    return current if current in TERMINAL_STATES else requested
+
+
+@contextmanager
+def job_state_locks(job_paths, timeout=10):
+    paths = sorted({Path(path).resolve() for path in job_paths}, key=lambda path: path.stem)
+    with ExitStack() as stack:
+        for path in paths:
+            stack.enter_context(FileLock(job_state_lock_path(path), timeout=timeout))
+        yield paths
+
+
+def load_job(path, state_locked=False):
+    path = Path(path)
     raw = load_json(path)
     migrated = migrate_job(raw)
     if migrated != raw:
-        atomic_write_json(path, migrated)
+        if state_locked:
+            atomic_write_json(path, migrated)
+        else:
+            with FileLock(job_state_lock_path(path), timeout=10):
+                current = load_json(path)
+                migrated = migrate_job(current)
+                if migrated != current:
+                    atomic_write_json(path, migrated)
     return migrated
+
+
+def update_job(path, mutator, timeout=10):
+    path = Path(path).resolve()
+    with FileLock(job_state_lock_path(path), timeout=timeout):
+        job = load_job(path, state_locked=True)
+        prior_status = job.get("status")
+        mutator(job)
+        if prior_status in TERMINAL_STATES:
+            job["status"] = prior_status
+        save_job(path, job)
+        return dict(job)
 
 
 def save_job(path, job, migrate=True):
@@ -127,8 +202,14 @@ def save_job(path, job, migrate=True):
         job.clear()
         job.update(migrated)
     else:
-        missing = set(REQUIRED_JOB_FIELDS) - set(job)
-        if missing or job.get("schema_version") != 1:
+        legacy_required = {
+            "schema_version", "job_id", "thread_id", "project_root", "original_goal",
+            "status", "billing_policy", "limit_id", "max_cycles", "completed_cycles",
+            "poll_interval_seconds", "safety_margin_seconds", "checkpoint_path",
+            "expected_repo_snapshot", "watchdog_pid", "created_at", "updated_at", "last_error",
+        }
+        missing = legacy_required - set(job)
+        if missing or job.get("schema_version") not in {1, 2}:
             raise ValueError("invalid raw legacy job")
     atomic_write_json(path, job)
 

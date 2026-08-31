@@ -52,6 +52,7 @@ class SkillDocumentationTests(unittest.TestCase):
                 match.group(0) + " --no-start",
             ])
             env = os.environ.copy()
+            env.pop("CODEX_THREAD_ID", None)
             env["PYTHONUTF8"] = "1"
             powershell = (
                 shutil.which("pwsh")

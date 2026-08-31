@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -33,7 +34,7 @@ class V110Tests(unittest.TestCase):
             job = self.job(max_cycles=5, schema_version=1)
             save_job(path, job, migrate=False)
             loaded = load_job(path)
-            self.assertEqual(2, loaded["schema_version"])
+            self.assertEqual(3, loaded["schema_version"])
             self.assertIsNone(loaded["max_cycles"])
             self.assertEqual(loaded, json.loads(path.read_text(encoding="utf-8")))
 
@@ -58,7 +59,7 @@ class V110Tests(unittest.TestCase):
             self.make_repo(project)
             home = Path(tmp) / "home"
             unlimited = register_job(str(uuid.uuid4()), project, "goal", home, start_watchdog=False)
-            self.assertEqual(2, unlimited["schema_version"])
+            self.assertEqual(3, unlimited["schema_version"])
             self.assertIsNone(unlimited["max_cycles"])
             finite = register_job(str(uuid.uuid4()), project, "goal", home, max_cycles=7, start_watchdog=False)
             self.assertEqual(7, finite["max_cycles"])
@@ -105,7 +106,8 @@ class V110Tests(unittest.TestCase):
             with mock.patch("auto_resume.registering.watchdog_lease_is_live", return_value=False), \
                  mock.patch("auto_resume.registering.launch_watchdog", return_value=222) as launch:
                 register_job(thread_id, project, "newer goal", home, start_watchdog=True)
-                launch.assert_called_once_with(job_path.resolve(), codex_command=None)
+            launch.assert_called_once_with(job_path.resolve(), codex_command=None,
+                                           handshake_timeout=10)
 
     def test_concurrent_registration_creates_one_job(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -141,8 +143,9 @@ class V110Tests(unittest.TestCase):
             self.make_repo(project)
             home = Path(tmp) / "home"
             thread_id = str(uuid.uuid4())
-            first = preflight(thread_id, project, "goal one", home, start_watchdog=False)
-            second = preflight(thread_id, project, "goal two", home, start_watchdog=False)
+            with mock.patch.dict(os.environ, {"CODEX_THREAD_ID": ""}, clear=False):
+                first = preflight(thread_id, project, "goal one", home, start_watchdog=False)
+                second = preflight(thread_id, project, "goal two", home, start_watchdog=False)
             self.assertEqual("REGISTERED", first["outcome"])
             self.assertEqual("REUSED", second["outcome"])
             self.assertEqual(first["job"]["job_id"], second["job"]["job_id"])

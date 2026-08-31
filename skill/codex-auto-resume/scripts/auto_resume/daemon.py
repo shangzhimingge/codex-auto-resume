@@ -6,10 +6,14 @@ import uuid
 from pathlib import Path
 
 from .processes import process_identity, process_is_running
-from .registering import WatchdogStartError, launch_watchdog
+from .activation import task_is_ignored
+from .registering import WatchdogStartError, _register_job, ensure_watchdog_started
+from .repo import fingerprint
+from .session_tasks import (SUBAGENT_FALLBACK_GOAL, discover_session_updates, git_root,
+                            task_intervals_for_thread)
 from .state import (ACTIVE_STATES, FileLock, atomic_write_json, ensure_runtime_layout,
-                    load_job, load_json, runtime_home)
-from .watchdog_lease import watchdog_lease_is_live
+                    load_job, load_json, runtime_home, update_job)
+from .watch import publish_child_terminal
 
 
 def daemon_state_path(codex_home=None):
@@ -72,37 +76,163 @@ def stop_daemon(codex_home=None, timeout=10, sleep=time.sleep):
     raise RuntimeError(f"daemon did not stop within {timeout} seconds: {pid}")
 
 
-def scan_once(codex_home=None):
+def _existing_jobs(jobs):
+    result = []
+    for path in jobs.glob("*.json"):
+        try:
+            result.append((path, load_job(path)))
+        except (OSError, ValueError):
+            continue
+    return result
+
+
+def _project_for_task(task, existing):
+    project = git_root(task.get("cwd"))
+    if project is not None:
+        return project
+    candidates = {Path(job["project_root"]) for _, job in existing
+                  if job.get("thread_id") in {task.get("thread_id"), task.get("parent_thread_id")}}
+    return candidates.pop() if len(candidates) == 1 else None
+
+
+def _parent_for_task(task, existing, project, sessions_root):
+    parents = [job for _, job in existing
+               if job.get("thread_id") == task.get("parent_thread_id") and
+               Path(job["project_root"]) == project]
+    forked_at = task.get("fork_timestamp")
+    if forked_at is not None:
+        try:
+            intervals = task_intervals_for_thread(task["parent_thread_id"], sessions_root)
+        except (OSError, ValueError):
+            intervals = []
+        task_ids = {item["task_id"] for item in intervals
+                    if item.get("started_at") is not None and item["started_at"] <= forked_at and
+                    (item.get("completed_at") is None or forked_at < item["completed_at"])}
+        matched = [job for job in parents if job.get("task_id") in task_ids]
+        if len(matched) == 1:
+            return matched[0], "fork_timestamp"
+    explicit = task.get("parent_task_id")
+    if explicit:
+        matched = [job for job in parents if job.get("task_id") == explicit]
+        if len(matched) == 1:
+            return matched[0], "rollout_explicit"
+    active = [job for job in parents if job.get("status") in ACTIVE_STATES]
+    return (active[0], "heuristic_active") if len(active) == 1 else (None, "unassociated")
+
+
+def _reconcile_authoritative_associations(codex_home, sessions_root, jobs, counts):
+    """Let fork-time evidence repair earlier heuristic child associations."""
+    existing = _existing_jobs(jobs)
+    for _, child in existing:
+        if not child.get("parent_thread_id") or child.get("fork_timestamp") is None:
+            continue
+        parent, source = _parent_for_task(child, existing, Path(child["project_root"]), sessions_root)
+        if parent is None or source != "fork_timestamp":
+            continue
+        if (child.get("parent_task_id") == parent.get("task_id") and
+                child.get("association_source") == "fork_timestamp"):
+            continue
+        if child.get("association_source") not in {None, "legacy", "unassociated", "heuristic_active",
+                                                   "fork_timestamp"}:
+            continue
+        try:
+            _register_job(
+                child["thread_id"], Path(child["project_root"]), child["original_goal"], codex_home,
+                start_watchdog=False, task_id=child["task_id"],
+                thread_source=child.get("thread_source", "rollout"),
+                parent_thread_id=child["parent_thread_id"], parent_task_id=parent["task_id"],
+                root_thread_id=parent.get("root_thread_id") or parent["thread_id"],
+                agent_path=child.get("agent_path"), rollout_path=child.get("rollout_path"),
+                goal_source=child.get("goal_source", "rollout"),
+                fork_timestamp=child.get("fork_timestamp"), association_source="fork_timestamp",
+            )
+            counts["reconciled"] += 1
+        except (OSError, ValueError, RuntimeError) as exc:
+            counts["discovery_errors"].append({"rollout": child.get("rollout_path"), "error": str(exc)})
+
+
+def _discover_and_reconcile(codex_home, sessions_root, jobs):
+    result = discover_session_updates(codex_home, sessions_root)
+    counts = {"discovered": len(result["tasks"]) + len(result["completed"]),
+              "registered": 0, "reconciled": 0, "ignored": 0,
+              "deferred": result.get("deferred", 0), "discovery_errors": result["errors"]}
+    existing = _existing_jobs(jobs)
+    for task in result["completed"]:
+        matched = [(path, job) for path, job in existing
+                   if job.get("thread_id") == task["thread_id"] and job.get("task_id") == task["task_id"]]
+        for path, job in matched:
+            if job["status"] in ACTIVE_STATES:
+                if job.get("parent_thread_id") and job.get("parent_task_id"):
+                    job = publish_child_terminal(
+                        path, codex_home, "DONE", final_text=task.get("last_agent_message"),
+                        snapshot=fingerprint(job["project_root"]))
+                else:
+                    job = update_job(path, lambda value: value.update(status="DONE")
+                                     if value.get("status") in ACTIVE_STATES else None)
+                counts["reconciled"] += 1
+    # Roots first: a daemon that was stopped can observe a new parent turn and
+    # its child in the same scan.  Register the new parent before associating.
+    ordered_tasks = sorted(result["tasks"], key=lambda item: bool(item.get("parent_thread_id")))
+    for task in ordered_tasks:
+        if task_is_ignored(codex_home, task["thread_id"], task["task_id"]):
+            counts["ignored"] += 1
+            continue
+        project = _project_for_task(task, existing)
+        goal = str(task.get("goal") or (SUBAGENT_FALLBACK_GOAL if task.get("parent_thread_id") else "")).strip()
+        if project is None or not goal:
+            counts["deferred"] += 1
+            continue
+        parent_task_id = task.get("parent_task_id")
+        parent_job = None
+        association_source = ("rollout_explicit" if parent_task_id is not None else "unassociated")
+        if task.get("parent_thread_id"):
+            parent_job, association_source = _parent_for_task(task, existing, project, sessions_root)
+            if parent_job is not None:
+                parent_task_id = parent_job["task_id"]
+        try:
+            _, outcome = _register_job(
+                task["thread_id"], project, goal, codex_home, start_watchdog=False,
+                task_id=task["task_id"], thread_source=task.get("thread_source", "rollout"),
+                parent_thread_id=task.get("parent_thread_id"), parent_task_id=parent_task_id,
+                root_thread_id=(parent_job or {}).get("root_thread_id") or task.get("root_thread_id") or task["thread_id"],
+                agent_path=task.get("agent_path"), rollout_path=task.get("rollout_path"),
+                goal_source=task.get("goal_source", "rollout"), interrupted=task.get("interrupted", False),
+                fork_timestamp=task.get("fork_timestamp"), association_source=association_source,
+            )
+            counts["registered"] += outcome == "REGISTERED"
+            counts["reconciled"] += outcome == "REUSED"
+            existing = _existing_jobs(jobs)
+        except (OSError, ValueError, RuntimeError) as exc:
+            counts["discovery_errors"].append({"rollout": task.get("rollout_path"), "error": str(exc)})
+    _reconcile_authoritative_associations(codex_home, sessions_root, jobs, counts)
+    return counts
+
+
+def scan_once(codex_home=None, sessions_root=None):
     home = runtime_home(codex_home)
     jobs = home / "jobs"
-    result = {"examined": 0, "started": 0, "live": 0, "skipped": 0, "errors": []}
-    if not jobs.is_dir():
-        return result
-    for job_path in sorted(jobs.glob("*.json")):
+    jobs.mkdir(parents=True, exist_ok=True)
+    discovery = _discover_and_reconcile(codex_home, sessions_root, jobs)
+    result = {"examined": 0, "started": 0, "live": 0, "skipped": 0, "errors": [], **discovery}
+    for job_path in sorted(path for path in jobs.glob("*.json")
+                           if not path.name.endswith(".watchdog.json")):
         result["examined"] += 1
         try:
             job = load_job(job_path)
             if job["status"] not in ACTIVE_STATES:
                 result["skipped"] += 1
                 continue
-            stale_after = max(30, job["poll_interval_seconds"] * 3)
-            if watchdog_lease_is_live(job_path, job.get("watchdog_pid"), stale_after):
+            job, started = ensure_watchdog_started(job_path)
+            if started:
+                result["started"] += 1
+            else:
                 result["live"] += 1
-                continue
-            register_lock = jobs / f"{job['job_id']}.register.lock"
-            with FileLock(register_lock, timeout=0.2):
-                job = load_job(job_path)
-                if watchdog_lease_is_live(job_path, job.get("watchdog_pid"), stale_after):
-                    result["live"] += 1
-                else:
-                    launch_watchdog(job_path)
-                    result["started"] += 1
         except (OSError, ValueError, RuntimeError, WatchdogStartError) as exc:
             result["errors"].append({"job": job_path.name, "error": str(exc)})
     return result
 
 
-def run_daemon(codex_home=None, interval=10, once=False, sleep=time.sleep):
+def run_daemon(codex_home=None, interval=10, once=False, sleep=time.sleep, sessions_root=None):
     layout = ensure_runtime_layout(codex_home)
     home = layout["root"]
     stop = {"requested": False}
@@ -116,7 +246,7 @@ def run_daemon(codex_home=None, interval=10, once=False, sleep=time.sleep):
     with FileLock(layout["state"] / "daemon.lock"):
         nonce = uuid.uuid4().hex
         while True:
-            result = scan_once(codex_home)
+            result = scan_once(codex_home, sessions_root=sessions_root)
             atomic_write_json(daemon_state_path(codex_home), {
                 "pid": os.getpid(),
                 "process_identity": process_identity(os.getpid()),

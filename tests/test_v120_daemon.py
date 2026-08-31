@@ -44,7 +44,8 @@ class V120DaemonTests(unittest.TestCase):
             done["status"] = "DONE"
             done_path = home / "auto-resume" / "jobs" / f"{done['job_id']}.json"
             save_job(done_path, done)
-            with mock.patch("auto_resume.daemon.launch_watchdog", return_value=321) as launch:
+            with mock.patch("auto_resume.daemon.ensure_watchdog_started",
+                            return_value=(stale, True)) as launch:
                 result = daemon.scan_once(home)
             self.assertEqual(1, result["started"])
             launch.assert_called_once_with(stale_path.resolve())
