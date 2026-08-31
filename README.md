@@ -1,12 +1,24 @@
 # Codex Auto Resume
 
+## v1.3 per-turn and subagent recovery
+
+Version 1.3 registers each rollout turn by `(actual thread UUID, task_started.turn_id, Git root)`. The daemon discovers missed registrations from bounded session tails, supersedes an older active turn in the same thread/project, and keeps child-agent threads as independent jobs.
+
+Recovery is leaf-first and serialized per project. Managed lineage snapshots let siblings and parents accept child changes while rejecting external edits. Child results are hidden until a finalized, revisioned handoff is published; the parent consumes that exact revision once. Self-created resume turns reconcile into the original job instead of recursively creating jobs.
+
+The session scanner attempts an exact reversible provisional launch claim before classifying every new turn, even when its first input arrives in the same scan. It confirms only a matching claim after the resume marker or exact internal preflight is visible, and releases it when ordinary user input wins the race. A marker string without a matching launch remains ordinary user input. Provisional turns are never marked seen.
+
+Job documents have one atomic update path and canonical lock order. Terminal states are absorbing. A child finalizes its handoff and lineage while its project lease is still held, then publishes terminal state and releases the lease, so a parent cannot run ahead of an incomplete result.
+
+Preflight and daemon recovery share a per-job startup lock and recheck the durable watchdog lease inside it. If a descendant registers after an ancestor has claimed the project, registration marks that lease pending; the ancestor checks before spawn, during supervision, and before commit, yields to `WAITING_RESET`, and releases the project for leaf-first recovery. Handoff paths and revisions occupy separate prompt lines, so every path remains directly readable.
+
 [![CI](https://github.com/shangzhimingge/codex-auto-resume/actions/workflows/ci.yml/badge.svg)](https://github.com/shangzhimingge/codex-auto-resume/actions/workflows/ci.yml)
 
 > **Resume long-running Codex tasks safely after ChatGPT usage-window resets.**
 
 [简体中文](./README.zh-CN.md)
 
-![Version](https://img.shields.io/badge/version-v1.2.1-2563eb)
+![Version](https://img.shields.io/badge/version-v1.3.0-2563eb)
 ![License](https://img.shields.io/badge/license-MIT-16a34a)
 ![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-111827)
 

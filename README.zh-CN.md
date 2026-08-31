@@ -1,12 +1,22 @@
 # Codex 自动续作
 
+## v1.3 每 turn 与子代理恢复
+
+v1.3 按实际线程 UUID、`task_started.turn_id` 与 Git 根注册每个 turn。daemon 从有界 session 尾部发现漏注册任务，同一线程与项目的新 turn 会原子取代旧活动任务，子代理线程保持独立任务。
+
+恢复按叶子优先并在项目内串行。统一的任务状态更新使用固定锁序，终态不可回退。子代理在持有项目租约期间完成 handoff、谱系与终态发布，父任务按精确 revision 仅消费一次。
+
+session 扫描器会在分类每个新 turn 前先尝试精确、可撤销的 provisional 启动认领，即使 task 与首条输入在同批扫描中出现；仅有匹配 launch 时，续作标记或精确内部预检才会确认认领。无匹配 launch 的标记字符串仍按普通用户输入注册。provisional turn 不写 seen。
+
+preflight 与 daemon 共用每任务 startup lock，并在锁内重检持久 watchdog lease。同项目的子代理若在祖先认领项目后注册，会给祖先 lease 标记 descendant pending；祖先在启动前、监督周期和提交前检查并退回 `WAITING_RESET`，让叶子任务先运行。handoff 路径与 revision 在提示中分行，路径可直接读取。
+
 [![CI](https://github.com/shangzhimingge/codex-auto-resume/actions/workflows/ci.yml/badge.svg)](https://github.com/shangzhimingge/codex-auto-resume/actions/workflows/ci.yml)
 
 > **在 ChatGPT 用量窗口重置后，安全地继续长时间运行的 Codex 任务。**
 
 [English](./README.md)
 
-![Version](https://img.shields.io/badge/version-v1.2.1-2563eb)
+![Version](https://img.shields.io/badge/version-v1.3.0-2563eb)
 ![License](https://img.shields.io/badge/license-MIT-16a34a)
 ![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-111827)
 

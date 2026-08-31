@@ -1,3 +1,20 @@
+# 1.3.0
+
+- Added per-turn registration from trusted rollout metadata, v1/v2-to-v3 state migration, and atomic superseding.
+- Added parent/child/grandchild lineage, leaf-first serialized recovery, managed snapshots, and durable one-time handoffs.
+- Added opt-out tombstones, self-resume reconciliation markers, bounded session cursors, and discovery diagnostics.
+- Scanner registration now waits for observed turn input and records resume launches, preventing the `task_started`/marker write race.
+- Resume launches now use reversible provisional claims: unobserved input is never marked seen, ordinary user input releases the claim, and only a marker or exact internal preflight confirms it.
+- Unified job-state mutation under canonical locks, made terminal states absorbing, and atomically merged registration, watcher, daemon, checkpoint, and lineage updates.
+- Child handoffs are invisible until finalized, carry immutable revisions, and are consumed by exact `(path, revision)` receipt once; child terminal publication completes before its project lease is released.
+- Scanner cursors refresh persisted launch claims under cursor-to-launch lock order, including exact confirmed turns whose input remains encrypted when a limit event arrives.
+- Preflight and daemon startup now share a per-job check-and-launch lock; descendant registration preempts an already claimed ancestor before spawn, during supervision, or before commit.
+- Handoff paths and revisions now use separate resume-prompt lines, preserving a directly readable filesystem path.
+- Every newly observed task now attempts exact launch provisioning before input classification; a resume-marker string is internal only when that same turn owns a matching launch claim.
+- Jobs persist fork timestamps and association provenance; authoritative fork-time lineage repairs earlier active-parent heuristics.
+- Unconsumed handoffs merge late child text, event summaries, and artifacts idempotently before one-time parent consumption.
+- Preserved exact UUID verification, included-window-only billing, checkpoint safety, external-change protection, and Windows lock retries.
+
 # v1.2.1: unified runtime and deeper diagnostics
 
 - Added the shared `scripts/auto_resume.py` Python entrypoint for preflight, job execution, daemon control, rate-limit probing, and status while retaining all legacy wrappers.

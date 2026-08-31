@@ -14,7 +14,7 @@ from pathlib import Path
 from .services import file_digest, service_adapter
 
 PRODUCT = "io.github.shangzhimingge.codex-auto-resume"
-VERSION = "1.2.1"
+VERSION = "1.3.0"
 BEGIN = "<!-- BEGIN CODEX-AUTO-RESUME MANAGED BLOCK -->"
 END = "<!-- END CODEX-AUTO-RESUME MANAGED BLOCK -->"
 MANIFEST_SCHEMA = 1
@@ -22,6 +22,7 @@ KNOWN_LEGACY_DIGESTS = {
     "1.1.0": "d80744c81d3d6fd58c1b1ba0d2ec7194e7f7ae2c95fd75c44be5a7aa4156b27b",
     "1.1.1": "d7cf8bc5e2cf304c6e80ef485b65ef34bb48788935d7435320dbfd50d980fc87",
     "1.2.0": "f44ca8e992174d9c8f6c86473ba9d32d38fb96f936ba8d7242fefd8fc63ace2c",
+    "1.2.1": "313850b87e523ec07c8366887db8b1fc57d553cef615029a2742751e5eac1044",
 }
 
 
