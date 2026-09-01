@@ -797,7 +797,9 @@ class SessionTaskTests(unittest.TestCase):
 
             with mock.patch.dict(os.environ, {"CODEX_THREAD_ID": thread}, clear=False), \
                     mock.patch("auto_resume.registering.watchdog_lease_is_live", side_effect=fake_live), \
-                    mock.patch("auto_resume.registering.launch_watchdog", side_effect=fake_launch):
+                    mock.patch("auto_resume.registering.launch_watchdog", side_effect=fake_launch), \
+                    mock.patch("auto_resume.daemon.ensure_daemon_started",
+                               return_value=({"running": True}, False)):
                 first = threading.Thread(target=run_preflight)
                 second = threading.Thread(target=run_daemon)
                 first.start(); second.start(); first.join(5); second.join(5)

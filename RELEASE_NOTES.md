@@ -1,3 +1,11 @@
+# 1.4.0
+
+- Start the daemon only after a qualified automatic preflight registers or reuses a task.
+- Serialize on-demand startup with a dedicated lock and PID/heartbeat handshake.
+- Launch detached and hidden on Windows and in a new session on POSIX, with all stdio discarded.
+- Remove legacy Windows, macOS, and Linux login-start registrations during install, upgrade, and uninstall.
+- Record `backend=on_demand`; `--no-start` now suppresses both watchdog and daemon startup.
+
 # 1.3.0
 
 - Added per-turn registration from trusted rollout metadata, v1/v2-to-v3 state migration, and atomic superseding.

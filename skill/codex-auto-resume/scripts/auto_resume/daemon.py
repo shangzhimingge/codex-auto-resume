@@ -1,13 +1,17 @@
 import json
 import os
 import signal
+import subprocess
+import sys
 import time
 import uuid
 from pathlib import Path
 
 from .processes import process_identity, process_is_running
 from .activation import task_is_ignored
-from .registering import WatchdogStartError, _register_job, ensure_watchdog_started
+from .registering import (WatchdogStartError, _detach_popen, _register_job,
+                          detached_process_options, ensure_watchdog_started)
+from .resume import _terminate_process_tree
 from .repo import fingerprint
 from .session_tasks import (SUBAGENT_FALLBACK_GOAL, discover_session_updates, git_root,
                             task_intervals_for_thread)
@@ -39,6 +43,45 @@ def daemon_status(codex_home=None, stale_after=30):
             -5 <= time.time() - heartbeat <= stale_after and
             process_is_running(pid, identity))
     return {**state, "running": bool(live)}
+
+
+def launch_daemon(codex_home=None, popen=None):
+    """Launch the supervisor without inheriting a terminal or stdio handles."""
+    daemon = Path(__file__).parents[1] / "daemon.py"
+    argv = [sys.executable, str(daemon), "run"]
+    if codex_home is not None:
+        argv.extend(("--codex-home", str(Path(codex_home).expanduser().resolve())))
+    return (popen or subprocess.Popen)(
+        argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, close_fds=True, shell=False,
+        **detached_process_options(),
+    )
+
+
+def ensure_daemon_started(codex_home=None, handshake_timeout=10, lock_timeout=15,
+                          popen=None, sleep=time.sleep):
+    """Serialize the daemon check-launch-handshake transition across preflights."""
+    layout = ensure_runtime_layout(codex_home)
+    with FileLock(layout["state"] / "daemon.startup.lock", timeout=lock_timeout):
+        status = daemon_status(codex_home)
+        if status.get("running"):
+            return status, False
+        process = launch_daemon(codex_home, popen=popen)
+        deadline = time.monotonic() + handshake_timeout
+        while time.monotonic() < deadline:
+            status = daemon_status(codex_home, stale_after=max(30, handshake_timeout))
+            if status.get("running") and status.get("pid") == process.pid:
+                _detach_popen(process)
+                return status, True
+            if process.poll() is not None:
+                if status.get("running"):
+                    _detach_popen(process)
+                    return status, False
+                break
+            sleep(0.05)
+        if process.poll() is None:
+            _terminate_process_tree(process)
+        raise RuntimeError("daemon exited before completing its startup handshake")
 
 
 def stop_daemon(codex_home=None, timeout=10, sleep=time.sleep):

@@ -37,6 +37,8 @@ python "$SKILL_ROOT/scripts/preflight.py" --thread-id "$THREAD_ID" --project "$P
 python "$SKILL_ROOT/scripts/preflight.py" --opt-out
 ```
 
+合格预检在注册锁释放后按需启动共享 daemon；Windows 使用无窗口、脱离进程组，macOS/Linux 使用新会话。跳过、opt-out 和 `--no-start` 均不启动 daemon，其中 `--no-start` 也不启动 watchdog。daemon 内部发现直接调用注册层，不会递归触发 daemon 启动。
+
 可解析的 opt-out 写入 `(thread, task)` tombstone。注册键为 `actual_thread_id + task_id + git_root`：同一 turn 幂等；同一 thread/project 的新 task supersede 旧活动 job；父子代理拥有独立 job。自动恢复 turn 通过 `CODEX_AUTO_RESUME_JOB_ID/TASK_ID` 和 `[CODEX_AUTO_RESUME]` 标记归并回原 job。
 
 ## 手动注册
@@ -66,6 +68,8 @@ daemon 对 sessions 做有界增量扫描，容忍半行、截断、轮转和单
 同项目恢复由项目锁串行，并按叶子优先：grandchild → child → parent。任务状态通过统一原子更新路径与固定锁序合并，终态不可回退。同谱系受管变更推进 lineage snapshot；等待期间的外部或不同谱系变更进入 `NEEDS_USER`。子代理持有项目 lease 时先 finalized 带 revision 的 handoff，再发布终态与 lineage，最后释放 lease；父任务按 `(path, revision)` 精确读取并仅消费一次。
 
 preflight 与 daemon 通过同一 per-job startup lock 在锁内重检 watchdog lease。若子代理在祖先已经 claim 项目后注册，注册层会写入 descendant-pending；祖先在 spawn 前、监督周期和提交前检查该标记，退回 `WAITING_RESET` 并释放 lease。父任务提示中的 handoff path 与 revision 分行，path 可直接读取。
+
+daemon 以 `daemon.lock` 作为运行实例权威，并用 `daemon.startup.lock` 串行化检查、启动和 PID/心跳握手。
 
 恢复始终使用保存的实际 thread UUID，并校验首个 `thread.started`。恢复子进程持续探测 primary/secondary included window；任一耗尽即终止整个进程组并回到 `WAITING_RESET`。
 

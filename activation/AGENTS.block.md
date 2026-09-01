@@ -8,6 +8,7 @@
 3. 注册键是 `actual_thread_id + task_id + git_root`。同一 turn 幂等复用；同一 thread/project 的新 turn 原子 supersede 旧活动 job；子代理使用自己的实际 thread 保持独立 job。
 4. 自动恢复创建的 turn 通过 `CODEX_AUTO_RESUME_JOB_ID/TASK_ID` 与固定提示标记归并回原 job，避免递归注册。
 5. 任一必要上下文缺失时接受结构化 `SKIPPED` 并继续原任务。只有用户明确设置有限循环时才传 `--max-cycles`。
+6. 仅当合格预检成功注册或复用任务时，才按需以隐藏、脱离终端的方式启动共享 daemon；`--no-start` 同时禁止 watchdog 与 daemon 启动。
 
 预检结果 `REGISTERED`、`REUSED` 或 `SKIPPED` 不改变原任务内容。
 <!-- END CODEX-AUTO-RESUME MANAGED BLOCK -->

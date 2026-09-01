@@ -92,7 +92,7 @@ class V121Tests(unittest.TestCase):
             self.assertEqual("ok", report["rate_limit_probe"]["status"])
             self.assertEqual("ok", report["daemon_heartbeat"]["status"])
             self.assertEqual("ok", report["runtime_writable"]["status"])
-            self.assertEqual("warning", report["linux_linger"]["status"])
+            self.assertEqual("ok", report["linux_linger"]["status"])
             self.assertTrue(all(timeout == 7 for _argv, timeout in calls))
             self.assertFalse(any("enable-linger" in " ".join(argv) for argv, _ in calls))
 
@@ -112,8 +112,24 @@ class V121Tests(unittest.TestCase):
                                               runner=unhealthy)
             self.assertEqual("error", failed["codex_login"]["status"])
             self.assertEqual("error", failed["rate_limit_probe"]["status"])
-            self.assertEqual("error", failed["daemon_heartbeat"]["status"])
-            self.assertEqual("warning", failed["linux_linger"]["status"])
+            self.assertEqual("ok", failed["daemon_heartbeat"]["status"])
+            self.assertIn("inactive", failed["daemon_heartbeat"]["detail"])
+            self.assertEqual("ok", failed["linux_linger"]["status"])
+
+    def test_runtime_writability_denial_returns_prompt_error(self):
+        core = importlib.import_module("installer.codex_auto_resume_installer.core")
+        with tempfile.TemporaryDirectory() as tmp:
+            started = time.monotonic()
+            with mock.patch.object(core.os, "open", side_effect=PermissionError("denied")) as opened:
+                report = core._health_diagnostics(
+                    Path(tmp) / "codex", "win32", simulate=True, timeout=2)
+            elapsed = time.monotonic() - started
+            self.assertLess(elapsed, 1)
+            self.assertEqual("error", report["runtime_writable"]["status"])
+            self.assertIn("denied", report["runtime_writable"]["detail"])
+            opened.assert_called_once()
+            flags = opened.call_args.args[1]
+            self.assertEqual(core.os.O_CREAT | core.os.O_EXCL | core.os.O_WRONLY, flags)
 
     def test_doctor_reports_healthy_and_degraded_states(self):
         core = importlib.import_module("installer.codex_auto_resume_installer.core")
@@ -150,21 +166,21 @@ class V121Tests(unittest.TestCase):
                     health_timeout=4, health_runner=degraded_runner,
                 )
             self.assertTrue(degraded["ok"], degraded)
-            self.assertTrue(degraded["degraded"], degraded)
-            self.assertEqual(["linux_linger"], degraded["warnings"])
+            self.assertFalse(degraded["degraded"], degraded)
+            self.assertEqual([], degraded["warnings"])
             self.assertEqual([], degraded["errors"])
 
-    def test_macos_first_install_creates_log_parent_before_bootstrap(self):
+    def test_macos_first_install_creates_runtime_without_bootstrap(self):
         core = importlib.import_module("installer.codex_auto_resume_installer.core")
         services = importlib.import_module("installer.codex_auto_resume_installer.services")
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             home = base / "codex"
 
+            calls = []
+
             def runner(argv, **_kwargs):
-                if "bootstrap" in argv:
-                    self.assertTrue((home / "auto-resume" / "logs").is_dir())
-                    self.assertTrue((home / "auto-resume" / "state").is_dir())
+                calls.append(list(argv))
                 if "print" in argv:
                     return subprocess.CompletedProcess(argv, 1, "", "not loaded")
                 return subprocess.CompletedProcess(argv, 0, "", "")
@@ -175,10 +191,11 @@ class V121Tests(unittest.TestCase):
             with mock.patch.object(services.os, "getuid", return_value=501, create=True):
                 result = core.install(ROOT, home, platform_name="darwin",
                                       skip_prerequisites=True, service=adapter)
-            plist = Path(result["manifest"]["service"]["config_path"]).read_text(encoding="utf-8")
-            canonical_home = home.resolve()
-            self.assertIn(str(canonical_home / "auto-resume" / "logs" / "daemon.stdout.log"), plist)
-            self.assertIn(str(canonical_home / "auto-resume" / "logs" / "daemon.stderr.log"), plist)
+            self.assertTrue((home / "auto-resume" / "logs").is_dir())
+            self.assertTrue((home / "auto-resume" / "state").is_dir())
+            self.assertEqual("on_demand", result["manifest"]["service"]["backend"])
+            self.assertFalse(Path(result["manifest"]["service"]["config_path"]).exists())
+            self.assertFalse(any("bootstrap" in call for call in calls))
 
 
 if __name__ == "__main__":

@@ -59,6 +59,14 @@ def _record_resume_attempt(codex_home, job, discovered):
         atomic_write_json(path, value)
 
 
+def _ensure_daemon_for_preflight(codex_home, start_watchdog):
+    if start_watchdog:
+        # Local import avoids daemon -> activation -> daemon recursion while
+        # keeping daemon discovery registrations side-effect free.
+        from .daemon import ensure_daemon_started
+        ensure_daemon_started(codex_home)
+
+
 def preflight(thread_id=None, project=None, goal=None, codex_home=None, opt_out=False,
               start_watchdog=True, max_cycles=None, task_id=None, parent_thread_id=None,
               parent_task_id=None, root_thread_id=None, agent_path=None, rollout_path=None,
@@ -97,9 +105,10 @@ def preflight(thread_id=None, project=None, goal=None, codex_home=None, opt_out=
                     discovered["thread_id"], discovered["task_id"],
                     discovered.get("started_at"))
             _record_resume_attempt(codex_home, existing, discovered)
-            return {"outcome": "REUSED", "job": existing, "resume_attempt": True}
         except (OSError, ValueError, RuntimeError):
             return {"outcome": "SKIPPED", "reason": "internal_identity_mismatch"}
+        _ensure_daemon_for_preflight(codex_home, start_watchdog)
+        return {"outcome": "REUSED", "job": existing, "resume_attempt": True}
     effective_thread = thread_id or env_thread
     discovered = None
     if effective_thread:
@@ -158,4 +167,7 @@ def preflight(thread_id=None, project=None, goal=None, codex_home=None, opt_out=
         fork_timestamp=(fork_timestamp if fork_timestamp is not None else metadata.get("fork_timestamp")),
         association_source=effective_association,
     )
+    # _register_job releases its registration and job-state locks before it
+    # returns. Start the shared supervisor only for a qualified preflight.
+    _ensure_daemon_for_preflight(codex_home, start_watchdog)
     return {"outcome": outcome, "job": job}

@@ -1,8 +1,8 @@
 # Codex Auto Resume
 
-## v1.3 per-turn and subagent recovery
+## v1.4 on-demand background supervisor
 
-Version 1.3 registers each rollout turn by `(actual thread UUID, task_started.turn_id, Git root)`. The daemon discovers missed registrations from bounded session tails, supersedes an older active turn in the same thread/project, and keeps child-agent threads as independent jobs.
+Version 1.4 starts one hidden daemon on the first qualified automatic preflight instead of at login. It retains v1.3 registration by `(actual thread UUID, task_started.turn_id, Git root)`: the daemon discovers missed registrations from bounded session tails, supersedes an older active turn in the same thread/project, and keeps child-agent threads as independent jobs.
 
 Recovery is leaf-first and serialized per project. Managed lineage snapshots let siblings and parents accept child changes while rejecting external edits. Child results are hidden until a finalized, revisioned handoff is published; the parent consumes that exact revision once. Self-created resume turns reconcile into the original job instead of recursively creating jobs.
 
@@ -18,7 +18,7 @@ Preflight and daemon recovery share a per-job startup lock and recheck the durab
 
 [简体中文](./README.zh-CN.md)
 
-![Version](https://img.shields.io/badge/version-v1.3.0-2563eb)
+![Version](https://img.shields.io/badge/version-v1.4.0-2563eb)
 ![License](https://img.shields.io/badge/license-MIT-16a34a)
 ![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-111827)
 
@@ -34,7 +34,7 @@ Node.js is only a thin launcher. The transactional installer and all installatio
 npx -y github:shangzhimingge/codex-auto-resume
 ```
 
-The no-argument command installs or upgrades the Skill, creates the global activation block, writes a stable byte-preserving `AGENTS.md` backup, installs the native per-user service, and records an ownership manifest.
+The no-argument command installs or upgrades the Skill, creates the global activation block, writes a stable byte-preserving `AGENTS.md` backup, removes legacy login-start registrations, and records an ownership manifest with the `on_demand` backend.
 
 Useful commands:
 
@@ -48,21 +48,13 @@ npx -y github:shangzhimingge/codex-auto-resume uninstall --purge-data
 
 `uninstall` preserves jobs and checkpoints. `--purge-data` is the explicit destructive option for removing runtime state. The stable `AGENTS.md.codex-auto-resume.backup` is preserved in both cases.
 
-## Native service adapters
+## On-demand hidden daemon
 
-| Platform | Per-user service | Configuration |
-| --- | --- | --- |
-| Windows | Task Scheduler; per-user Startup fallback when task creation is denied | `%CODEX_HOME%/auto-resume/service/windows/codex-auto-resume.cmd` |
-| macOS | launchd LaunchAgent | `~/Library/LaunchAgents/io.github.shangzhimingge.codex-auto-resume.plist` |
-| Linux | systemd user unit | `~/.config/systemd/user/codex-auto-resume.service` |
+No daemon is registered at login. A qualified automatic preflight starts the shared supervisor only after task registration has completed and all registration locks are released. `daemon.lock` remains the running-instance authority, while `daemon.startup.lock` serializes the check, detached launch, and PID/heartbeat handshake. Concurrent preflights therefore converge on one daemon.
 
-On Windows, the installer first requests a least-privilege per-user `ONLOGON` task. If Windows denies that registration, it writes an owned launcher to the current user's Startup folder and immediately starts the hidden daemon with a verified PID/heartbeat handshake. The selected backend and launcher digest are recorded in the ownership manifest.
+Windows uses `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`; macOS and Linux use a new session. All daemon stdio is redirected to the null device and `shell=False` is enforced. Skipped or opted-out preflights do not launch it, and `--no-start` disables both watchdog and daemon startup. Resume-created turns merge into their existing job before checking the daemon, so startup does not recurse through daemon discovery.
 
-The Linux adapter runs `systemctl --user enable --now` and never enables user lingering. `doctor` only reads the current linger state with a bounded `loginctl` query and reports disabled/unavailable linger as a warning.
-
-The complete installation and service path is validated on Windows. macOS and Linux adapter generation, transactional installation, diagnosis, uninstall, and purge paths are exercised through platform simulations; run `doctor` after installation on those platforms.
-
-`doctor` separately reports errors and warnings. It checks the ownership manifest, service configuration, Codex login, a read-only app-server rate-limit probe, daemon lease/heartbeat, and runtime-directory write access. External checks have bounded timeouts; warnings produce a degraded but usable result.
+Install and upgrade idempotently remove legacy Windows Task Scheduler/Startup, macOS launchd, and Linux systemd user registrations. Uninstall reuses the same cleanup. `doctor` treats an inactive daemon as healthy before the first qualified task.
 
 ## Transaction and ownership safety
 
@@ -82,7 +74,7 @@ The Python installer:
 Eligible Git task starts
   -> deterministic preflight registers exact thread UUID + project
   -> checkpoint and Git snapshot are written atomically
-  -> native per-user daemon repairs missing active watchdogs
+  -> preflight starts one hidden on-demand daemon after registration
   -> watchdog reads account/rateLimits/read
   -> every exhausted usage bucket reaches its real reset time
   -> Git state is checked for external changes
@@ -137,7 +129,7 @@ The PowerShell wrapper remains available:
 - Python 3.9+
 - Git
 - logged-in Codex CLI
-- Windows 10/11, macOS with launchd, or Linux with a systemd user session
+- Windows 10/11, macOS, or Linux
 
 ## Verification
 

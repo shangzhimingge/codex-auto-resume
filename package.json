@@ -1,6 +1,6 @@
 {
   "name": "codex-auto-resume",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Automatically and safely resume Codex tasks after ChatGPT usage-window resets.",
   "type": "module",
   "bin": {

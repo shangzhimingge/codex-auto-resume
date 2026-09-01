@@ -1,4 +1,3 @@
-import getpass
 import hashlib
 import json
 import os
@@ -14,7 +13,7 @@ from pathlib import Path
 from .services import file_digest, service_adapter
 
 PRODUCT = "io.github.shangzhimingge.codex-auto-resume"
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 BEGIN = "<!-- BEGIN CODEX-AUTO-RESUME MANAGED BLOCK -->"
 END = "<!-- END CODEX-AUTO-RESUME MANAGED BLOCK -->"
 MANIFEST_SCHEMA = 1
@@ -230,12 +229,16 @@ def _validate_manifest(manifest, paths):
         raise OwnershipError("ownership manifest service record is malformed")
     if service.get("platform") not in {"win32", "darwin", "linux"}:
         raise OwnershipError("ownership manifest service platform is unsupported")
-    if not re.fullmatch(r"[0-9a-f]{64}", str(service.get("config_digest", ""))):
-        raise OwnershipError("ownership manifest service digest is malformed")
-    if service.get("backend") not in {"scheduled_task", "startup", "launchd LaunchAgents",
-                                      "systemd user"}:
+    backend = service.get("backend")
+    if backend not in {"on_demand", "scheduled_task", "startup", "launchd LaunchAgents",
+                       "systemd user"}:
         raise OwnershipError("ownership manifest service backend is unsupported")
-    if service.get("backend") == "startup":
+    if backend == "on_demand":
+        if service.get("config_digest") is not None or service.get("active") is not False:
+            raise OwnershipError("ownership manifest on-demand record is malformed")
+    elif not re.fullmatch(r"[0-9a-f]{64}", str(service.get("config_digest", ""))):
+        raise OwnershipError("ownership manifest service digest is malformed")
+    if backend == "startup":
         if not service.get("autostart_path") or not re.fullmatch(
                 r"[0-9a-f]{64}", str(service.get("autostart_digest", ""))):
             raise OwnershipError("ownership manifest startup record is malformed")
@@ -356,21 +359,25 @@ def _health_diagnostics(codex_home, platform_name, simulate=False, timeout=15, r
         else:
             try:
                 state = json.loads(daemon.stdout)
-                heartbeat = state.get("heartbeat_at")
-                age = time.time() - heartbeat
-                if (not state.get("running") or isinstance(heartbeat, bool) or
-                        not isinstance(heartbeat, (int, float)) or age < -5 or age > 30):
-                    raise ValueError("daemon lease or heartbeat is stale")
-                diagnostics["daemon_heartbeat"] = _diagnostic(
-                    "ok", f"pid={state.get('pid')} heartbeat_age={age:.1f}s")
+                if not state.get("running"):
+                    diagnostics["daemon_heartbeat"] = _diagnostic(
+                        "ok", "inactive; starts after the first qualified preflight")
+                else:
+                    heartbeat = state.get("heartbeat_at")
+                    age = time.time() - heartbeat
+                    if (isinstance(heartbeat, bool) or not isinstance(heartbeat, (int, float)) or
+                            age < -5 or age > 30):
+                        raise ValueError("daemon lease or heartbeat is stale")
+                    diagnostics["daemon_heartbeat"] = _diagnostic(
+                        "ok", f"pid={state.get('pid')} heartbeat_age={age:.1f}s")
             except (ValueError, TypeError, AttributeError):
                 diagnostics["daemon_heartbeat"] = _diagnostic(
                     "error", "daemon lease or heartbeat is unavailable")
 
-    write_probe = None
+    write_probe = layout["state"] / f".doctor-{uuid.uuid4().hex}"
     fd = None
     try:
-        fd, write_probe = tempfile.mkstemp(prefix=".doctor-", dir=layout["state"])
+        fd = os.open(write_probe, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         os.write(fd, b"ok")
         os.close(fd)
         fd = None
@@ -380,29 +387,14 @@ def _health_diagnostics(codex_home, platform_name, simulate=False, timeout=15, r
     finally:
         if fd is not None:
             os.close(fd)
-        if write_probe:
-            try:
-                os.unlink(write_probe)
-            except FileNotFoundError:
-                pass
+        try:
+            os.unlink(write_probe)
+        except FileNotFoundError:
+            pass
 
     if platform_name.lower() == "linux":
-        if simulate:
-            diagnostics["linux_linger"] = _diagnostic("ok", "simulated; installer never enables linger")
-        else:
-            linger, error = _run_health(
-                ["loginctl", "show-user", getpass.getuser(), "-p", "Linger", "--value"],
-                timeout, runner,
-            )
-            if error or linger.returncode != 0:
-                detail = error or (linger.stderr or linger.stdout or "linger status unavailable").strip()
-                diagnostics["linux_linger"] = _diagnostic(
-                    "warning", f"{detail}; linger is never enabled automatically")
-            elif linger.stdout.strip().lower() == "yes":
-                diagnostics["linux_linger"] = _diagnostic("ok", "enabled")
-            else:
-                diagnostics["linux_linger"] = _diagnostic(
-                    "warning", "disabled; background resume requires a user session")
+        diagnostics["linux_linger"] = _diagnostic(
+            "ok", "not required by the on-demand daemon")
     return diagnostics
 
 
@@ -463,7 +455,8 @@ def install(repo_root, codex_home, platform_name=None, simulate=False,
         same_agents = updated_agents == agents_text
         service_status = adapter.status() if hasattr(adapter, "status") else {"active": False}
         backup_ok = paths["backup"].is_file()
-        if same_activation and same_agents and service_status.get("active") and backup_ok:
+        if (same_activation and same_agents and not service_status.get("active") and
+                manifest.get("service", {}).get("backend") == "on_demand" and backup_ok):
             return {"version": VERSION, "manifest": manifest, "idempotent": True}
 
     skills_root = paths["skill"].parent
@@ -578,7 +571,7 @@ def doctor(codex_home, platform_name=None, simulate=False, skip_prerequisites=Fa
             checks["service_autostart"] = (checks["service_autostart_path"] and
                                            file_digest(autostart) ==
                                            manifest["service"].get("autostart_digest"))
-        checks["service_active"] = status.get("active", False)
+        checks["service_absent"] = not status.get("active", False)
     selected_platform = (platform_name or (manifest or {}).get("service", {}).get("platform") or
                          sys.platform)
     diagnostics = _health_diagnostics(

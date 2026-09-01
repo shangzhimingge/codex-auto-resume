@@ -1,8 +1,8 @@
 # Codex 自动续作
 
-## v1.3 每 turn 与子代理恢复
+## v1.4 按需后台监督器
 
-v1.3 按实际线程 UUID、`task_started.turn_id` 与 Git 根注册每个 turn。daemon 从有界 session 尾部发现漏注册任务，同一线程与项目的新 turn 会原子取代旧活动任务，子代理线程保持独立任务。
+v1.4 不再登录自启，而是在首次合格自动预检时隐藏启动唯一 daemon。它保留 v1.3 按实际线程 UUID、`task_started.turn_id` 与 Git 根注册每个 turn 的模型：daemon 从有界 session 尾部发现漏注册任务，同一线程与项目的新 turn 会原子取代旧活动任务，子代理线程保持独立任务。
 
 恢复按叶子优先并在项目内串行。统一的任务状态更新使用固定锁序，终态不可回退。子代理在持有项目租约期间完成 handoff、谱系与终态发布，父任务按精确 revision 仅消费一次。
 
@@ -16,7 +16,7 @@ preflight 与 daemon 共用每任务 startup lock，并在锁内重检持久 wat
 
 [English](./README.md)
 
-![Version](https://img.shields.io/badge/version-v1.3.0-2563eb)
+![Version](https://img.shields.io/badge/version-v1.4.0-2563eb)
 ![License](https://img.shields.io/badge/license-MIT-16a34a)
 ![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-111827)
 
@@ -32,7 +32,7 @@ Node.js 只负责启动；事务安装器和全部安装决策均由 Python 实�
 npx -y github:shangzhimingge/codex-auto-resume
 ```
 
-无参数命令会安装或升级 Skill、创建全局激活块、写入稳定且字节保真的 `AGENTS.md` 备份、安装当前平台的用户级服务，并记录所有权清单。
+无参数命令会安装或升级 Skill、创建全局激活块、写入稳定且字节保真的 `AGENTS.md` 备份、清理旧版登录自启项，并在所有权清单中记录 `on_demand` 后端。
 
 常用命令：
 
@@ -46,21 +46,13 @@ npx -y github:shangzhimingge/codex-auto-resume uninstall --purge-data
 
 默认卸载会保留任务和检查点；只有显式使用 `--purge-data` 才会清理运行数据。两种卸载方式都会保留稳定的 `AGENTS.md.codex-auto-resume.backup`。
 
-## 原生服务适配器
+## 按需隐藏启动 daemon
 
-| 平台 | 用户级服务 | 配置位置 |
-| --- | --- | --- |
-| Windows | 任务计划程序；创建被拒绝时回退到当前用户“启动”目录 | `%CODEX_HOME%/auto-resume/service/windows/codex-auto-resume.cmd` |
-| macOS | launchd LaunchAgent | `~/Library/LaunchAgents/io.github.shangzhimingge.codex-auto-resume.plist` |
-| Linux | systemd 用户单元 | `~/.config/systemd/user/codex-auto-resume.service` |
+安装器不再注册登录自启。只有合格的自动预检在完成任务注册并释放全部注册锁后，才启动共享 daemon。`daemon.lock` 仍是运行实例的权威，`daemon.startup.lock` 串行化检查、脱离终端启动及 PID/心跳握手；并发预检最终只产生一个 daemon。
 
-Windows 安装器会先申请最低权限的当前用户 `ONLOGON` 任务；若系统拒绝注册，则写入由清单托管的当前用户“启动”目录启动器，并通过 PID 与心跳握手确认隐藏守护进程已经启动。最终选用的后端及启动器摘要会写入所有权清单。
+Windows 使用 `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`；macOS 与 Linux 使用新会话。daemon 的标准输入输出均指向空设备，并固定 `shell=False`。跳过或 opt-out 的预检不启动 daemon；`--no-start` 同时禁止 watchdog 与 daemon。自动恢复产生的 turn 会先归并回既有 job，再检查 daemon，因此不会通过 daemon 发现路径递归启动。
 
-Linux 适配器执行 `systemctl --user enable --now`，不会开启用户 lingering。`doctor` 只通过带超时的 `loginctl` 查询读取当前 linger 状态；未开启或查询不可用仅作为警告报告。
-
-完整安装与服务链路已在 Windows 上实际验证。macOS 和 Linux 的服务生成、事务安装、诊断、卸载与清理路径通过平台模拟验证；在这些平台安装后请执行 `doctor`。
-
-`doctor` 会分别报告错误与警告，并检查所有权清单、服务配置、Codex 登录状态、只读 app-server 限额探针、守护进程 lease/心跳，以及运行目录写权限。所有外部检查均有超时；仅有警告时状态为可用但退化。
+安装和升级会幂等清理旧版 Windows 任务计划/“启动”目录、macOS launchd 与 Linux systemd 用户自启项；卸载复用同一清理逻辑。首次合格任务前 daemon 处于未运行状态，`doctor` 将其视为正常。
 
 ## 事务与所有权安全
 
@@ -80,7 +72,7 @@ Python 安装器会：
 符合条件的 Git 任务开始
   -> 确定性预检注册精确线程 UUID 与项目
   -> 原子写入检查点和 Git 快照
-  -> 原生用户级守护服务修复缺失的活动 watchdog
+  -> 预检在注册后按需隐藏启动唯一 daemon
   -> watchdog 读取 account/rateLimits/read
   -> 所有已耗尽窗口到达真实重置时间
   -> 检查 Git 是否有外部变更
@@ -135,7 +127,7 @@ PowerShell 包装器继续保留：
 - Python 3.9+
 - Git
 - 已登录的 Codex CLI
-- Windows 10/11、带 launchd 的 macOS，或带 systemd 用户会话的 Linux
+- Windows 10/11、macOS 或 Linux
 
 ## 验证
 

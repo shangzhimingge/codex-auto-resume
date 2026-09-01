@@ -23,14 +23,14 @@ def services_api():
 class V120InstallerTests(unittest.TestCase):
     def test_distribution_has_bilingual_docs_english_metadata_and_matching_versions(self):
         package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
-        self.assertEqual("1.3.0", package["version"])
+        self.assertEqual("1.4.0", package["version"])
         self.assertEqual("./bin/cli.mjs", package["bin"]["codex-auto-resume"])
         self.assertTrue((ROOT / "README.md").read_text(encoding="utf-8").startswith("# Codex Auto Resume\n"))
         self.assertTrue((ROOT / "README.zh-CN.md").read_text(encoding="utf-8").startswith("# Codex 自动续作\n"))
         metadata = (ROOT / "skill" / "codex-auto-resume" / "agents" / "openai.yaml").read_text(encoding="utf-8")
         self.assertIn('display_name: "Codex Auto Resume"', metadata)
         self.assertIn("allow_implicit_invocation: true", metadata)
-        self.assertEqual("1.3.0", (ROOT / "skill" / "codex-auto-resume" / "VERSION").read_text().strip())
+        self.assertEqual("1.4.0", (ROOT / "skill" / "codex-auto-resume" / "VERSION").read_text().strip())
 
     def test_simulated_install_is_transactional_idempotent_and_doctor_is_clean(self):
         api = installer_api()
@@ -41,11 +41,11 @@ class V120InstallerTests(unittest.TestCase):
             (home / "AGENTS.md").write_bytes(original)
             result = api.install(ROOT, home, platform_name="win32", simulate=True,
                                  skip_prerequisites=True)
-            self.assertEqual("1.3.0", result["version"])
+            self.assertEqual("1.4.0", result["version"])
             manifest_path = home / "auto-resume" / "install-manifest.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             self.assertEqual("io.github.shangzhimingge.codex-auto-resume", manifest["product"])
-            self.assertEqual("1.3.0", manifest["version"])
+            self.assertEqual("1.4.0", manifest["version"])
             self.assertEqual(original, Path(str(home / "AGENTS.md") + ".codex-auto-resume.backup").read_bytes())
             agents = (home / "AGENTS.md").read_text(encoding="utf-8")
             self.assertEqual(1, agents.count(BEGIN))
@@ -141,27 +141,29 @@ class V120InstallerTests(unittest.TestCase):
             self.assertFalse((home / "auto-resume").exists())
             self.assertTrue(Path(str(home / "AGENTS.md") + ".codex-auto-resume.backup").exists())
 
-    def test_service_adapters_generate_native_configs_without_linux_linger(self):
+    def test_service_adapters_remove_legacy_login_entries_and_report_on_demand(self):
         services = services_api()
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             daemon = base / "daemon.py"
             daemon.write_text("pass\n", encoding="utf-8")
-            for platform_name, needle in (
-                    ("win32", "schtasks"), ("darwin", "LaunchAgents"),
-                    ("linux", "systemd")):
+            for platform_name in ("win32", "darwin", "linux"):
                 home = base / platform_name / "codex"
                 user_home = base / platform_name / "user"
-                adapter = services.service_adapter(platform_name, home, user_home=user_home,
-                                                   simulate=True)
+                adapter = services.service_adapter(
+                    platform_name, home, user_home=user_home, simulate=True)
+                adapter.config_path.parent.mkdir(parents=True, exist_ok=True)
+                adapter.config_path.write_text("legacy\n", encoding="utf-8")
+                if platform_name == "win32":
+                    adapter.startup_path.parent.mkdir(parents=True, exist_ok=True)
+                    adapter.startup_path.write_text("legacy\n", encoding="utf-8")
                 metadata = adapter.install("python", daemon)
-                config = Path(metadata["config_path"])
-                self.assertTrue(config.is_file(), platform_name)
-                rendered = config.read_text(encoding="utf-8")
-                self.assertIn(str(daemon), rendered)
-                self.assertIn(needle.lower(), (rendered + json.dumps(metadata)).lower())
-                self.assertNotIn("loginctl", rendered.lower())
-            self.assertNotIn("loginctl", Path(services.__file__).read_text(encoding="utf-8").lower())
+                self.assertEqual("on_demand", metadata["backend"])
+                self.assertFalse(metadata["active"])
+                self.assertIsNone(metadata["config_digest"])
+                self.assertFalse(adapter.config_path.exists())
+                if platform_name == "win32":
+                    self.assertFalse(adapter.startup_path.exists())
 
     def test_only_known_legacy_digests_are_adopted_implicitly(self):
         api = installer_api()
@@ -174,104 +176,50 @@ class V120InstallerTests(unittest.TestCase):
             api.KNOWN_LEGACY_DIGESTS["1.2.1"],
         )
 
-    def test_windows_access_denied_falls_back_to_owned_startup_launcher(self):
+    def test_platform_cleanup_invokes_only_removal_commands(self):
         services = services_api()
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
-            daemon = base / "daemon.py"
-            daemon.write_text("pass\n", encoding="utf-8")
+            calls = []
 
             def runner(argv, **_kwargs):
-                if "/Create" in argv:
-                    return subprocess.CompletedProcess(argv, 1, "", "ERROR: Access is denied.")
+                calls.append(list(map(str, argv)))
                 return subprocess.CompletedProcess(argv, 1, "", "not found")
 
-            adapter = services.service_adapter(
-                "win32", base / "codex", user_home=base / "appdata",
-                simulate=False, runner=runner,
-            )
-            with mock.patch.object(adapter, "_start_daemon") as start:
-                metadata = adapter.install("python", daemon)
-            self.assertEqual("startup", metadata["backend"])
-            self.assertTrue(Path(metadata["autostart_path"]).is_file())
-            self.assertEqual(services.file_digest(metadata["autostart_path"]),
-                             metadata["autostart_digest"])
-            start.assert_called_once()
-            with mock.patch.object(adapter, "_stop_daemon") as stop:
-                adapter.uninstall()
-            stop.assert_called_once()
-            self.assertFalse(Path(metadata["autostart_path"]).exists())
-
-    def test_windows_foreign_startup_launcher_fails_closed(self):
-        services = services_api()
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            appdata = base / "appdata"
-            startup = (appdata / "Microsoft" / "Windows" / "Start Menu" /
-                       "Programs" / "Startup" / "CodexAutoResume.cmd")
-            startup.parent.mkdir(parents=True)
-            startup.write_text("private\n", encoding="utf-8")
-            adapter = services.service_adapter(
-                "win32", base / "codex", user_home=appdata, simulate=False,
-                runner=lambda argv, **kwargs: subprocess.CompletedProcess(argv, 1, "", "not found"),
-            )
-            with self.assertRaises(services.ServiceOwnershipError):
-                adapter.install("python", base / "daemon.py")
-            self.assertEqual("private\n", startup.read_text(encoding="utf-8"))
-
-    def test_owned_windows_startup_upgrade_stops_old_daemon_before_starting_new(self):
-        services = services_api()
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            adapter = services.service_adapter(
-                "win32", base / "codex", user_home=base / "appdata", simulate=False,
-                owned=True, backend="startup",
-                runner=lambda argv, **kwargs: subprocess.CompletedProcess(argv, 1, "", "not found"),
-            )
-            adapter.startup_path.parent.mkdir(parents=True)
-            adapter.startup_path.write_text("old\n", encoding="utf-8")
-            calls = []
-            with mock.patch.object(adapter, "_stop_daemon", side_effect=lambda: calls.append("stop")), \
-                 mock.patch.object(adapter, "_start_daemon", side_effect=lambda: calls.append("start")):
+            for platform_name in ("win32", "darwin", "linux"):
+                adapter = services.service_adapter(
+                    platform_name, base / platform_name / "codex",
+                    user_home=base / platform_name / "user", simulate=False, runner=runner)
                 metadata = adapter.install("python", base / "daemon.py")
-            self.assertEqual(["stop", "start"], calls)
-            self.assertEqual("startup", metadata["backend"])
+                self.assertEqual("on_demand", metadata["backend"])
+            flattened = "\n".join(" ".join(call) for call in calls)
+            self.assertNotIn(" /Create ", f" {flattened} ")
+            self.assertNotIn(" bootstrap ", f" {flattened} ")
+            self.assertNotIn(" enable --now ", f" {flattened} ")
+            self.assertIn("/Delete", flattened)
+            self.assertIn("bootout", flattened)
+            self.assertIn("disable --now", flattened)
 
-    def test_manifest_doctor_and_uninstall_track_windows_startup_backend(self):
+    def test_manifest_is_on_demand_and_uninstall_reuses_legacy_cleanup(self):
         api, services = installer_api(), services_api()
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
-
-            def runner(argv, **_kwargs):
-                if "/Create" in argv:
-                    return subprocess.CompletedProcess(argv, 1, "", "ERROR: Access is denied.")
-                return subprocess.CompletedProcess(argv, 1, "", "not found")
-
+            home = base / "codex"
+            user_home = base / "appdata"
             adapter = services.service_adapter(
-                "win32", base / "codex", user_home=base / "appdata",
-                simulate=False, runner=runner,
-            )
-            with mock.patch.object(adapter, "_start_daemon"):
-                result = api.install(ROOT, base / "codex", platform_name="win32",
-                                     skip_prerequisites=True, service=adapter)
+                "win32", home, user_home=user_home, simulate=True)
+            result = api.install(ROOT, home, platform_name="win32",
+                                 skip_prerequisites=True, service=adapter)
             service_record = result["manifest"]["service"]
-            self.assertEqual("startup", service_record["backend"])
-            self.assertIn("autostart_path", service_record)
+            self.assertEqual("on_demand", service_record["backend"])
+            self.assertFalse(service_record["active"])
+            self.assertIsNone(service_record["config_digest"])
+            adapter.startup_path.parent.mkdir(parents=True, exist_ok=True)
+            adapter.startup_path.write_text("legacy\n", encoding="utf-8")
             with mock.patch.object(api, "service_adapter", return_value=adapter):
-                report = api.doctor(base / "codex", platform_name="win32",
-                                    skip_prerequisites=True, simulate=True)
-            self.assertTrue(report["ok"], report)
-            installed_daemon = (base / "codex" / "skills" / "codex-auto-resume" /
-                                "scripts" / "daemon.py")
-
-            def assert_daemon_present():
-                self.assertTrue(installed_daemon.is_file())
-
-            with mock.patch.object(api, "service_adapter", return_value=adapter), \
-                 mock.patch.object(adapter, "_stop_daemon", side_effect=assert_daemon_present):
-                removed = api.uninstall(base / "codex", platform_name="win32")
+                removed = api.uninstall(home, platform_name="win32", simulate=True)
             self.assertTrue(removed["uninstalled"])
-            self.assertFalse(Path(service_record["autostart_path"]).exists())
+            self.assertFalse(adapter.startup_path.exists())
 
 
 if __name__ == "__main__":

@@ -41,7 +41,7 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(0, first.returncode, first.stderr)
             installed = home / "skills" / "codex-auto-resume"
             self.assertTrue((installed / "VERSION").is_file())
-            self.assertEqual("1.3.0", (installed / "VERSION").read_text(encoding="utf-8").strip())
+            self.assertEqual("1.4.0", (installed / "VERSION").read_text(encoding="utf-8").strip())
             enabled = agents.read_text(encoding="utf-8")
             self.assertIn(original.strip(), enabled)
             self.assertEqual(1, enabled.count(BEGIN))
@@ -70,15 +70,15 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("AUTO_RESUME=OFF", block)
         self.assertIn("SKIPPED", block)
 
-    def test_runtime_and_distribution_versions_are_1_3_0(self):
+    def test_runtime_and_distribution_versions_are_1_4_0(self):
         skill = ROOT / "skill" / "codex-auto-resume"
-        self.assertEqual("1.3.0", (skill / "VERSION").read_text(encoding="utf-8").strip())
+        self.assertEqual("1.4.0", (skill / "VERSION").read_text(encoding="utf-8").strip())
         namespace = {}
         exec((skill / "scripts" / "auto_resume" / "__init__.py").read_text(encoding="utf-8"), namespace)
-        self.assertEqual("1.3.0", namespace["__version__"])
+        self.assertEqual("1.4.0", namespace["__version__"])
         installer_namespace = {}
         exec((ROOT / "installer" / "codex_auto_resume_installer" / "__init__.py").read_text(encoding="utf-8"), installer_namespace)
-        self.assertEqual("1.3.0", installer_namespace["__version__"])
+        self.assertEqual("1.4.0", installer_namespace["__version__"])
 
 
 if __name__ == "__main__":
