@@ -96,7 +96,8 @@ def preflight(thread_id=None, project=None, goal=None, codex_home=None, opt_out=
             candidate_workspace = resolve_workspace(
                 existing["thread_id"], explicit=project, actual_cwd=effective_actual_cwd,
                 codex_home=codex_home)
-            if workspace_from_job(existing) != candidate_workspace:
+            expected_workspace = workspace_from_job(existing)
+            if expected_workspace.root != candidate_workspace.root:
                 raise ValueError("internal project mismatch")
             if opt_out:
                 _ignore_task(codex_home, existing["thread_id"], existing["task_id"])

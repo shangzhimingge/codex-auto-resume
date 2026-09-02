@@ -70,6 +70,28 @@ class AnyWorkspaceTests(unittest.TestCase):
             self.assertEqual((home / "auto-resume" / "workspaces" / thread).resolve(), workspace.root)
             self.assertTrue(workspace.root.is_dir())
 
+    def test_internal_resume_accepts_managed_workspace_as_process_cwd(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home, thread = Path(tmp) / "home", str(uuid.uuid4())
+            with mock.patch.dict(os.environ, {}, clear=True), \
+                    mock.patch("auto_resume.activation.resolve_current_task", return_value=None):
+                registered = preflight(thread, codex_home=home, task_id="turn",
+                                       start_watchdog=False, actual_cwd=None)
+            job = registered["job"]
+            self.assertEqual("managed", job["workspace_kind"])
+            internal_env = {
+                "CODEX_THREAD_ID": thread,
+                "CODEX_AUTO_RESUME_JOB_ID": job["job_id"],
+                "CODEX_AUTO_RESUME_TASK_ID": job["task_id"],
+            }
+            with mock.patch.dict(os.environ, internal_env, clear=True), \
+                    mock.patch("auto_resume.activation.resolve_current_task", return_value=None):
+                resumed = preflight(thread, codex_home=home, start_watchdog=False,
+                                    actual_cwd=Path(job["workspace_root"]))
+            self.assertEqual("REUSED", resumed["outcome"])
+            self.assertTrue(resumed["resume_attempt"])
+            self.assertEqual(job["job_id"], resumed["job"]["job_id"])
+
     def test_directory_snapshot_never_recurses(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "plain"; root.mkdir()
