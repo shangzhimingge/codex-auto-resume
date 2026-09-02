@@ -138,6 +138,7 @@ class WatchdogSafetyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             lock = Path(tmp) / "not-created.lock"
             with mock.patch("auto_resume.state.os.open", side_effect=PermissionError("denied")), \
+                    mock.patch.object(Path, "read_bytes", side_effect=PermissionError("unreadable")), \
                     mock.patch.object(Path, "unlink") as unlink:
                 with self.assertRaises(PermissionError):
                     with FileLock(lock, timeout=0.1):

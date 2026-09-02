@@ -1,3 +1,9 @@
+# 1.5.3
+
+- Retries Windows lock acquisition when an access-denied probe races with the current owner deleting the lock.
+- Preserves the original access error for every other unreadable-lock condition, retaining existing ACL behavior.
+- Adds deterministic coverage for the delete-between-open-and-read race alongside stale, live, concurrent, and unreadable lock cases.
+
 # 1.5.2
 
 - Places each Windows rate-limit app-server in a kill-on-close Job Object and drains it before returning.

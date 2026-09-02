@@ -18,7 +18,7 @@ Preflight and daemon recovery share a per-job startup lock and recheck the durab
 
 [简体中文](./README.zh-CN.md)
 
-![Version](https://img.shields.io/badge/version-v1.5.2-2563eb)
+![Version](https://img.shields.io/badge/version-v1.5.3-2563eb)
 ![License](https://img.shields.io/badge/license-MIT-16a34a)
 ![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-111827)
 
@@ -54,7 +54,7 @@ No daemon is registered at login. A qualified automatic preflight starts the sha
 
 Windows uses `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`; macOS and Linux use a new session. All daemon stdio is redirected to the null device and `shell=False` is enforced. Skipped or opted-out preflights do not launch it, and `--no-start` disables both watchdog and daemon startup. Resume-created turns merge into their existing job before checking the daemon, so startup does not recurse through daemon discovery.
 
-Rate-limit probes also use a hidden Windows process group or a new POSIX session and never inherit terminal handles. On Windows, every probe is attached to a kill-on-close Job Object; a PID plus creation-identity descendant snapshot provides the fallback for children created before attachment or when assignment is rejected. Cleanup terminates the Job first, applies hidden tree and identity-safe process termination, waits for the root and every captured descendant to disappear, and closes the Job handle last. Success, malformed responses, timeouts, and startup or communication failures all close pipes and join reader threads, while a cleanup failure never replaces the original RPC failure. Stale lock recovery requires a dead PID/process-identity match and compare-before-unlink; live owners and genuine permission failures are preserved. After taking `daemon.lock`, the daemon publishes its verified PID, identity, and initial heartbeat before the first scan, so a large runtime state cannot exhaust the startup-handshake window.
+Rate-limit probes also use a hidden Windows process group or a new POSIX session and never inherit terminal handles. On Windows, every probe is attached to a kill-on-close Job Object; a PID plus creation-identity descendant snapshot provides the fallback for children created before attachment or when assignment is rejected. Cleanup terminates the Job first, applies hidden tree and identity-safe process termination, waits for the root and every captured descendant to disappear, and closes the Job handle last. Success, malformed responses, timeouts, and startup or communication failures all close pipes and join reader threads, while a cleanup failure never replaces the original RPC failure. If a Windows access-denied lock probe finds that the lock disappeared before it could be read, acquisition retries instead of reporting a stale sharing error. Stale lock recovery requires a dead PID/process-identity match and compare-before-unlink; live owners and genuine permission failures are preserved. After taking `daemon.lock`, the daemon publishes its verified PID, identity, and initial heartbeat before the first scan, so a large runtime state cannot exhaust the startup-handshake window.
 
 Install and upgrade idempotently remove legacy Windows Task Scheduler/Startup, macOS launchd, and Linux systemd user registrations. Uninstall reuses the same cleanup. `doctor` treats an inactive daemon as healthy before the first qualified task.
 

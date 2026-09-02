@@ -260,6 +260,8 @@ class FileLock:
                 # readable; creation/ACL failures keep their PermissionError.
                 try:
                     self.path.read_bytes()
+                except FileNotFoundError:
+                    continue
                 except OSError:
                     raise exc
                 if self._recover_proven_stale():

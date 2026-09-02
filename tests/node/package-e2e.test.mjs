@@ -116,11 +116,11 @@ test('packed tarball installs and its public bin performs an isolated simulated 
     assertSucceeded(result);
 
     const installedSkill = path.join(codexHome, 'skills', 'codex-auto-resume');
-    assert.equal(fs.readFileSync(path.join(installedSkill, 'VERSION'), 'utf8').trim(), '1.5.2');
+    assert.equal(fs.readFileSync(path.join(installedSkill, 'VERSION'), 'utf8').trim(), '1.5.3');
     const manifest = JSON.parse(fs.readFileSync(
       path.join(codexHome, 'auto-resume', 'install-manifest.json'), 'utf8',
     ));
-    assert.equal(manifest.version, '1.5.2');
+    assert.equal(manifest.version, '1.5.3');
     assert.equal(manifest.product, 'io.github.shangzhimingge.codex-auto-resume');
     assert.equal(manifest.service.simulated, true);
     const agents = fs.readFileSync(path.join(codexHome, 'AGENTS.md'), 'utf8');

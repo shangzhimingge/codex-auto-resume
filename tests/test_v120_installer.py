@@ -23,14 +23,14 @@ def services_api():
 class V120InstallerTests(unittest.TestCase):
     def test_distribution_has_bilingual_docs_english_metadata_and_matching_versions(self):
         package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
-        self.assertEqual("1.5.2", package["version"])
+        self.assertEqual("1.5.3", package["version"])
         self.assertEqual("./bin/cli.mjs", package["bin"]["codex-auto-resume"])
         self.assertTrue((ROOT / "README.md").read_text(encoding="utf-8").startswith("# Codex Auto Resume\n"))
         self.assertTrue((ROOT / "README.zh-CN.md").read_text(encoding="utf-8").startswith("# Codex 自动续作\n"))
         metadata = (ROOT / "skill" / "codex-auto-resume" / "agents" / "openai.yaml").read_text(encoding="utf-8")
         self.assertIn('display_name: "Codex Auto Resume"', metadata)
         self.assertIn("allow_implicit_invocation: true", metadata)
-        self.assertEqual("1.5.2", (ROOT / "skill" / "codex-auto-resume" / "VERSION").read_text().strip())
+        self.assertEqual("1.5.3", (ROOT / "skill" / "codex-auto-resume" / "VERSION").read_text().strip())
 
     def test_simulated_install_is_transactional_idempotent_and_doctor_is_clean(self):
         api = installer_api()
@@ -41,11 +41,11 @@ class V120InstallerTests(unittest.TestCase):
             (home / "AGENTS.md").write_bytes(original)
             result = api.install(ROOT, home, platform_name="win32", simulate=True,
                                  skip_prerequisites=True)
-            self.assertEqual("1.5.2", result["version"])
+            self.assertEqual("1.5.3", result["version"])
             manifest_path = home / "auto-resume" / "install-manifest.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             self.assertEqual("io.github.shangzhimingge.codex-auto-resume", manifest["product"])
-            self.assertEqual("1.5.2", manifest["version"])
+            self.assertEqual("1.5.3", manifest["version"])
             self.assertEqual(original, Path(str(home / "AGENTS.md") + ".codex-auto-resume.backup").read_bytes())
             agents = (home / "AGENTS.md").read_text(encoding="utf-8")
             self.assertEqual(1, agents.count(BEGIN))
