@@ -231,6 +231,7 @@ class ProcessTreeGuard:
         self._tracked = {}
         self._job_handle = None
         self.assignment_error = None
+        self.descendant_assignment_errors = []
         self.creation_error = None
         self._closed = False
         if self.platform_name == "nt" and _WINDOWS_APIS_AVAILABLE:
@@ -317,8 +318,7 @@ class ProcessTreeGuard:
                         try:
                             self._assign_pid_to_job(pid)
                         except OSError as exc:
-                            if self.assignment_error is None:
-                                self.assignment_error = exc
+                            self.descendant_assignment_errors.append((pid, exc))
 
     def _terminate_job(self):
         if self._job_handle and not _kernel32.TerminateJobObject(self._job_handle, 1):

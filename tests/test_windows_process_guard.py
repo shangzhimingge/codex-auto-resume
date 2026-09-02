@@ -56,6 +56,20 @@ class WindowsProcessTreeGuardTests(unittest.TestCase):
         self.assertEqual({1234: "win:root"}, guard._tracked)
         self.assertIsNotNone(guard.assignment_error)
 
+    def test_descendant_assignment_failure_does_not_replace_root_assignment_state(self):
+        guard = self.make_guard()
+        guard._root_pid = 1234
+        guard._tracked = {1234: "win:root"}
+        with mock.patch.object(processes, "_process_parents",
+                               return_value={1234: 1, 2345: 1234}), \
+             mock.patch.object(processes, "process_is_running", return_value=True), \
+             mock.patch.object(processes, "process_identity", return_value="win:child"), \
+             mock.patch.object(guard, "_assign_pid_to_job",
+                               side_effect=OSError("descendant assign failed")):
+            guard._snapshot_descendants()
+        self.assertIsNone(guard.assignment_error)
+        self.assertEqual(1, len(guard.descendant_assignment_errors))
+
     def test_pid_reuse_is_not_terminated(self):
         guard = self.make_guard()
         guard._tracked = {2345: "win:old"}
