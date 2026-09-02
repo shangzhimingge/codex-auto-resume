@@ -18,7 +18,10 @@ class ProcessTreeTests(unittest.TestCase):
         proc = mock.Mock(pid=1234)
         proc.wait.side_effect = [subprocess.TimeoutExpired("wait", 0.5), 0]
         with mock.patch.object(processes, "os", types.SimpleNamespace(name="nt")), \
-                mock.patch.object(processes.subprocess, "run") as run:
+                mock.patch.object(processes.subprocess, "run") as run, \
+                mock.patch.object(processes, "process_identity", return_value="win:root"), \
+                mock.patch.object(processes, "process_is_running", return_value=True), \
+                mock.patch.object(processes.ProcessTreeGuard, "_drain_tracked"):
             processes.terminate_process_tree(proc)
         self.assertEqual(["taskkill", "/PID", "1234", "/T", "/F"],
                          run.call_args.args[0])

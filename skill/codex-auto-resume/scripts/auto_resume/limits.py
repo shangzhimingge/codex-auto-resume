@@ -2,11 +2,12 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import threading
 from pathlib import Path
 
 from . import __version__
-from .processes import terminate_process_tree
+from .processes import ProcessCleanupError, ProcessTreeGuard
 
 
 class LimitsError(RuntimeError):
@@ -74,6 +75,7 @@ def read_limits(codex_command=("codex",), timeout=15):
     argv = [*_normalize_command(codex_command), "app-server", "--listen", "stdio://"]
     proc = None
     workers = []
+    guard = ProcessTreeGuard()
     try:
         process_options = {"close_fds": True, "shell": False}
         if os.name == "nt":
@@ -88,6 +90,7 @@ def read_limits(codex_command=("codex",), timeout=15):
             stderr=subprocess.PIPE, text=True, encoding="utf-8",
             errors="replace", **process_options,
         )
+        guard.attach(proc)
         init = {"method": "initialize", "id": 1, "params": {
             "clientInfo": {"name": "codex-auto-resume", "title": "Codex Auto Resume", "version": __version__},
             "capabilities": {"experimentalApi": True},
@@ -101,8 +104,13 @@ def read_limits(codex_command=("codex",), timeout=15):
         action = "failed to start" if proc is None else "communication failed"
         raise LimitsError(f"app-server {action}: {exc}") from exc
     finally:
+        primary_error = sys.exc_info()[1]
+        cleanup_error = None
+        try:
+            guard.close()
+        except ProcessCleanupError as exc:
+            cleanup_error = exc
         if proc is not None:
-            terminate_process_tree(proc)
             for stream in (proc.stdin, proc.stdout, proc.stderr):
                 if stream is not None:
                     try:
@@ -111,6 +119,8 @@ def read_limits(codex_command=("codex",), timeout=15):
                         pass
             for worker in workers:
                 worker.join(timeout=2)
+        if cleanup_error is not None and primary_error is None:
+            raise LimitsError(f"app-server cleanup failed: {cleanup_error}") from cleanup_error
     if not isinstance(result, dict):
         raise LimitsError("missing rate-limit result")
     by_id = result.get("rateLimitsByLimitId")

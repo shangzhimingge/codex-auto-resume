@@ -1,3 +1,10 @@
+# 1.5.2
+
+- Places each Windows rate-limit app-server in a kill-on-close Job Object and drains it before returning.
+- Captures descendants by PID and process-creation identity for children created before Job attachment and for assignment failures.
+- Cleans up in deterministic Job, hidden tree/process fallback, root wait, identity-drain, and handle-close order without masking the original RPC error.
+- Adds barrier-driven Windows coverage for children created before and after Job attachment, assignment failure, PID reuse, timeouts, dual failures, and the unchanged POSIX path.
+
 # 1.5.1
 
 - Launches the rate-limit app-server in a hidden Windows process group or a new POSIX session without inheriting terminal handles.

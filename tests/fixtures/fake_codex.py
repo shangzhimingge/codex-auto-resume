@@ -15,6 +15,18 @@ def app_server():
     child = None
     process_record = os.environ.get("FAKE_APP_SERVER_PROCESS_RECORD")
     if process_record:
+        timing = os.environ.get("FAKE_APP_SERVER_CHILD_TIMING", "immediate")
+        ready = os.environ.get("FAKE_APP_SERVER_CHILD_READY")
+        release = os.environ.get("FAKE_APP_SERVER_CHILD_RELEASE")
+        if timing == "after_attach":
+            if ready:
+                with open(ready, "w", encoding="utf-8") as handle:
+                    handle.write("ready")
+            deadline = time.monotonic() + 10
+            while release and not os.path.exists(release):
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("child release barrier timed out")
+                time.sleep(0.01)
         child = subprocess.Popen(
             [sys.executable, "-c", "import time; time.sleep(120)"],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -32,6 +44,9 @@ def app_server():
             records = [{"pid": os.getpid()}, {"pid": child.pid}]
         with open(process_record, "w", encoding="utf-8") as handle:
             json.dump(records, handle)
+        if timing == "before_attach" and ready:
+            with open(ready, "w", encoding="utf-8") as handle:
+                handle.write("ready")
     messages = []
     for line in sys.stdin:
         message = json.loads(line)
