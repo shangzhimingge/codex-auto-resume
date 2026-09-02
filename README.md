@@ -1,10 +1,10 @@
 # Codex Auto Resume
 
-## v1.4 on-demand background supervisor
+## v1.5 any-workspace preflight
 
-Version 1.4 starts one hidden daemon on the first qualified automatic preflight instead of at login. It retains v1.3 registration by `(actual thread UUID, task_started.turn_id, Git root)`: the daemon discovers missed registrations from bounded session tails, supersedes an older active turn in the same thread/project, and keeps child-agent threads as independent jobs.
+Version 1.5 preflights every user and subagent turn, including questions and non-Git work. A workspace resolves in this order: explicit path, actual-cwd Git root, rollout-cwd Git root, actual directory, rollout directory, then a managed per-thread directory. Registration uses `(actual thread UUID, task_started.turn_id, workspace root)`, and child-agent threads always remain independent jobs.
 
-Recovery is leaf-first and serialized per project. Managed lineage snapshots let siblings and parents accept child changes while rejecting external edits. Child results are hidden until a finalized, revisioned handoff is published; the parent consumes that exact revision once. Self-created resume turns reconcile into the original job instead of recursively creating jobs.
+Recovery is leaf-first and serialized only when jobs share a workspace. Parent and child jobs may use different workspaces while retaining lineage and handoff links. Git workspaces preserve full HEAD/porcelain/content snapshot checks; directory and managed workspaces use a constant-time root identity snapshot with no recursive scan. Self-created resume turns reconcile into the original job instead of recursively creating jobs.
 
 The session scanner attempts an exact reversible provisional launch claim before classifying every new turn, even when its first input arrives in the same scan. It confirms only a matching claim after the resume marker or exact internal preflight is visible, and releases it when ordinary user input wins the race. A marker string without a matching launch remains ordinary user input. Provisional turns are never marked seen.
 
@@ -18,11 +18,11 @@ Preflight and daemon recovery share a per-job startup lock and recheck the durab
 
 [简体中文](./README.zh-CN.md)
 
-![Version](https://img.shields.io/badge/version-v1.4.0-2563eb)
+![Version](https://img.shields.io/badge/version-v1.5.0-2563eb)
 ![License](https://img.shields.io/badge/license-MIT-16a34a)
 ![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-111827)
 
-Codex Auto Resume is a Codex Skill and local service for Git tasks that may outlive a ChatGPT subscription usage window. It records the exact Codex thread UUID, Git snapshot, and structured checkpoint; waits for the real reset time reported by Codex app-server; and resumes the same thread when included usage is available again.
+Codex Auto Resume is a Codex Skill and local service for any task that may outlive a ChatGPT subscription usage window. It records the exact Codex thread/task identity, workspace snapshot, and structured checkpoint; waits for the real reset time reported by Codex app-server; and resumes the same thread when included usage is available again.
 
 It does not spend paid credits, call a reset-credit endpoint, switch to API billing, guess a thread, approve permissions, force-reset Git, or overwrite unexpected repository changes.
 
@@ -71,13 +71,13 @@ The Python installer:
 ## How runtime recovery works
 
 ```text
-Eligible Git task starts
-  -> deterministic preflight registers exact thread UUID + project
-  -> checkpoint and Git snapshot are written atomically
+Any user or subagent turn starts
+  -> deterministic preflight registers exact thread/task + workspace
+  -> checkpoint and workspace snapshot are written atomically
   -> preflight starts one hidden on-demand daemon after registration
   -> watchdog reads account/rateLimits/read
   -> every exhausted usage bucket reaches its real reset time
-  -> Git state is checked for external changes
+  -> Git workspaces check content; directory workspaces check root identity
   -> codex exec resume uses the saved UUID
   -> first thread.started UUID is verified
   -> work continues from NEXT_ACTION
@@ -92,6 +92,7 @@ The daemon is a lightweight supervisor. Existing per-job watchdog ownership rema
 ├── install-manifest.json
 ├── jobs/<JOB_ID>.json
 ├── checkpoints/<JOB_ID>.md
+├── workspaces/<THREAD_ID>/
 ├── logs/{daemon.stdout.log,daemon.stderr.log}
 └── state/{daemon-state.json,daemon.lock}
 ```
@@ -127,7 +128,7 @@ The PowerShell wrapper remains available:
 
 - Node.js 18+ for the `npx` launcher
 - Python 3.9+
-- Git
+- Git (optional; enables full repository snapshots)
 - logged-in Codex CLI
 - Windows 10/11, macOS, or Linux
 

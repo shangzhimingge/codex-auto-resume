@@ -684,7 +684,8 @@ class SessionTaskTests(unittest.TestCase):
                 line("event_msg", {"type": "agent_message", "message": "child work"}),
             ])
             with mock.patch.dict(os.environ, {"CODEX_THREAD_ID": child}, clear=False):
-                child_result = preflight(codex_home=home, sessions_root=sessions, start_watchdog=False)
+                child_result = preflight(codex_home=home, sessions_root=sessions,
+                                         start_watchdog=False, actual_cwd=None)
             child_job = child_result["job"]
             self.assertEqual(150, child_job["fork_timestamp"])
             with parent_path.open("a", encoding="utf-8") as handle:

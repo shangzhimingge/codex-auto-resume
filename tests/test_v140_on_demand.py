@@ -19,7 +19,6 @@ class OnDemandDaemonTests(unittest.TestCase):
     def test_qualified_preflight_starts_daemon_for_registered_and_reused_jobs(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {}, clear=True), \
                 mock.patch.object(activation, "resolve_current_task", return_value=None), \
-                mock.patch.object(activation, "validate_repo", side_effect=lambda value: Path(value)), \
                 mock.patch.object(activation, "_register_job") as register, \
                 mock.patch.object(daemon, "ensure_daemon_started") as ensure:
             for outcome in ("REGISTERED", "REUSED"):
@@ -34,7 +33,6 @@ class OnDemandDaemonTests(unittest.TestCase):
     def test_skipped_opt_out_and_no_start_launch_zero_daemons(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {}, clear=True), \
                 mock.patch.object(activation, "resolve_current_task", return_value=None), \
-                mock.patch.object(activation, "validate_repo", side_effect=lambda value: Path(value)), \
                 mock.patch.object(activation, "_register_job", return_value=({"job_id": "job"}, "REGISTERED")), \
                 mock.patch.object(daemon, "ensure_daemon_started") as ensure:
             self.assertEqual("SKIPPED", activation.preflight(codex_home=tmp)["outcome"])
@@ -48,21 +46,22 @@ class OnDemandDaemonTests(unittest.TestCase):
 
     def test_valid_internal_resume_merge_also_ensures_daemon(self):
         thread_id, task_id, job_id = str(uuid.uuid4()), "original-turn", "job"
-        job = {"job_id": job_id, "thread_id": thread_id, "task_id": task_id,
-               "project_root": str(Path("project").resolve())}
         env = {"CODEX_THREAD_ID": thread_id, "CODEX_AUTO_RESUME_JOB_ID": job_id,
                "CODEX_AUTO_RESUME_TASK_ID": task_id}
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, env, clear=True), \
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "project"; project.mkdir()
+            job = {"job_id": job_id, "thread_id": thread_id, "task_id": task_id,
+                   "workspace_kind": "directory", "workspace_root": str(project),
+                   "project_root": str(project)}
+            with mock.patch.dict(os.environ, env, clear=True), \
                 mock.patch.object(activation, "load_job", return_value=job), \
                 mock.patch.object(activation, "ensure_runtime_layout",
                                   return_value={"jobs": Path(tmp)}), \
-                mock.patch.object(activation, "validate_repo",
-                                  return_value=Path(job["project_root"])), \
                 mock.patch.object(activation, "resolve_current_task", return_value=None), \
                 mock.patch.object(activation, "_record_resume_attempt"), \
                 mock.patch.object(daemon, "ensure_daemon_started") as ensure:
-            result = activation.preflight(
-                thread_id, Path(job["project_root"]), codex_home=tmp, start_watchdog=True)
+                result = activation.preflight(
+                    thread_id, project, codex_home=tmp, start_watchdog=True)
         self.assertEqual("REUSED", result["outcome"])
         self.assertTrue(result["resume_attempt"])
         ensure.assert_called_once_with(tmp)

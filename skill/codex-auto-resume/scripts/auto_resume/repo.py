@@ -2,6 +2,8 @@ import hashlib
 import subprocess
 from pathlib import Path
 
+from .workspace import Workspace
+
 
 class RepoError(RuntimeError):
     pass
@@ -43,7 +45,7 @@ def _changed_paths(project):
     return raw, sorted(set(paths))
 
 
-def fingerprint(project):
+def _git_fingerprint(project):
     project = validate_repo(project)
     head = _git(project, "rev-parse", "HEAD").strip()
     porcelain, paths = _changed_paths(project)
@@ -55,6 +57,23 @@ def fingerprint(project):
         else:
             hashes[relative] = None
     return {"head": head, "porcelain": porcelain, "files_sha256": hashes}
+
+
+def _directory_fingerprint(workspace):
+    root = workspace.root
+    stat = root.stat()
+    return {
+        "kind": workspace.kind,
+        "root": str(root),
+        "directory_identity": {"device": stat.st_dev, "inode": stat.st_ino},
+    }
+
+
+def fingerprint(project):
+    workspace = project if isinstance(project, Workspace) else Workspace("git", Path(project))
+    if workspace.kind == "git":
+        return _git_fingerprint(workspace.root)
+    return _directory_fingerprint(workspace)
 
 
 def repo_matches(project, expected):

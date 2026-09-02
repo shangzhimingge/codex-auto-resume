@@ -8,16 +8,17 @@ import uuid
 from pathlib import Path
 
 from .processes import process_identity, process_is_running
-from .activation import task_is_ignored
+from .activation import ROOT_FALLBACK_GOAL, task_is_ignored
 from .registering import (WatchdogStartError, _detach_popen, _register_job,
                           detached_process_options, ensure_watchdog_started)
 from .resume import _terminate_process_tree
 from .repo import fingerprint
-from .session_tasks import (SUBAGENT_FALLBACK_GOAL, discover_session_updates, git_root,
+from .session_tasks import (SUBAGENT_FALLBACK_GOAL, discover_session_updates,
                             task_intervals_for_thread)
 from .state import (ACTIVE_STATES, FileLock, atomic_write_json, ensure_runtime_layout,
                     load_job, load_json, runtime_home, update_job)
 from .watch import publish_child_terminal
+from .workspace import resolve_workspace, workspace_from_job
 
 
 def daemon_state_path(codex_home=None):
@@ -129,19 +130,16 @@ def _existing_jobs(jobs):
     return result
 
 
-def _project_for_task(task, existing):
-    project = git_root(task.get("cwd"))
-    if project is not None:
-        return project
-    candidates = {Path(job["project_root"]) for _, job in existing
-                  if job.get("thread_id") in {task.get("thread_id"), task.get("parent_thread_id")}}
-    return candidates.pop() if len(candidates) == 1 else None
+def _workspace_for_task(task, codex_home):
+    return resolve_workspace(
+        task["thread_id"], actual_cwd=None, rollout_cwd=task.get("cwd"),
+        codex_home=codex_home, parent_thread_id=task.get("parent_thread_id"),
+        parent_task_id=task.get("parent_task_id"))
 
 
-def _parent_for_task(task, existing, project, sessions_root):
+def _parent_for_task(task, existing, sessions_root):
     parents = [job for _, job in existing
-               if job.get("thread_id") == task.get("parent_thread_id") and
-               Path(job["project_root"]) == project]
+               if job.get("thread_id") == task.get("parent_thread_id")]
     forked_at = task.get("fork_timestamp")
     if forked_at is not None:
         try:
@@ -169,7 +167,7 @@ def _reconcile_authoritative_associations(codex_home, sessions_root, jobs, count
     for _, child in existing:
         if not child.get("parent_thread_id") or child.get("fork_timestamp") is None:
             continue
-        parent, source = _parent_for_task(child, existing, Path(child["project_root"]), sessions_root)
+        parent, source = _parent_for_task(child, existing, sessions_root)
         if parent is None or source != "fork_timestamp":
             continue
         if (child.get("parent_task_id") == parent.get("task_id") and
@@ -180,7 +178,7 @@ def _reconcile_authoritative_associations(codex_home, sessions_root, jobs, count
             continue
         try:
             _register_job(
-                child["thread_id"], Path(child["project_root"]), child["original_goal"], codex_home,
+                child["thread_id"], workspace_from_job(child), child["original_goal"], codex_home,
                 start_watchdog=False, task_id=child["task_id"],
                 thread_source=child.get("thread_source", "rollout"),
                 parent_thread_id=child["parent_thread_id"], parent_task_id=parent["task_id"],
@@ -208,7 +206,7 @@ def _discover_and_reconcile(codex_home, sessions_root, jobs):
                 if job.get("parent_thread_id") and job.get("parent_task_id"):
                     job = publish_child_terminal(
                         path, codex_home, "DONE", final_text=task.get("last_agent_message"),
-                        snapshot=fingerprint(job["project_root"]))
+                        snapshot=fingerprint(workspace_from_job(job)))
                 else:
                     job = update_job(path, lambda value: value.update(status="DONE")
                                      if value.get("status") in ACTIVE_STATES else None)
@@ -220,26 +218,30 @@ def _discover_and_reconcile(codex_home, sessions_root, jobs):
         if task_is_ignored(codex_home, task["thread_id"], task["task_id"]):
             counts["ignored"] += 1
             continue
-        project = _project_for_task(task, existing)
-        goal = str(task.get("goal") or (SUBAGENT_FALLBACK_GOAL if task.get("parent_thread_id") else "")).strip()
-        if project is None or not goal:
-            counts["deferred"] += 1
+        try:
+            workspace = _workspace_for_task(task, codex_home)
+        except (OSError, ValueError, RuntimeError) as exc:
+            counts["discovery_errors"].append({"rollout": task.get("rollout_path"), "error": str(exc)})
             continue
+        goal = str(task.get("goal") or (SUBAGENT_FALLBACK_GOAL if task.get("parent_thread_id")
+                                         else ROOT_FALLBACK_GOAL)).strip()
+        goal_source = (task.get("goal_source", "rollout") if task.get("goal") else
+                       "subagent_fallback" if task.get("parent_thread_id") else "root_fallback")
         parent_task_id = task.get("parent_task_id")
         parent_job = None
         association_source = ("rollout_explicit" if parent_task_id is not None else "unassociated")
         if task.get("parent_thread_id"):
-            parent_job, association_source = _parent_for_task(task, existing, project, sessions_root)
+            parent_job, association_source = _parent_for_task(task, existing, sessions_root)
             if parent_job is not None:
                 parent_task_id = parent_job["task_id"]
         try:
             _, outcome = _register_job(
-                task["thread_id"], project, goal, codex_home, start_watchdog=False,
+                task["thread_id"], workspace, goal, codex_home, start_watchdog=False,
                 task_id=task["task_id"], thread_source=task.get("thread_source", "rollout"),
                 parent_thread_id=task.get("parent_thread_id"), parent_task_id=parent_task_id,
                 root_thread_id=(parent_job or {}).get("root_thread_id") or task.get("root_thread_id") or task["thread_id"],
                 agent_path=task.get("agent_path"), rollout_path=task.get("rollout_path"),
-                goal_source=task.get("goal_source", "rollout"), interrupted=task.get("interrupted", False),
+                goal_source=goal_source, interrupted=task.get("interrupted", False),
                 fork_timestamp=task.get("fork_timestamp"), association_source=association_source,
             )
             counts["registered"] += outcome == "REGISTERED"

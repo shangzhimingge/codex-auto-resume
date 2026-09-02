@@ -34,7 +34,7 @@ class V110Tests(unittest.TestCase):
             job = self.job(max_cycles=5, schema_version=1)
             save_job(path, job, migrate=False)
             loaded = load_job(path)
-            self.assertEqual(3, loaded["schema_version"])
+            self.assertEqual(4, loaded["schema_version"])
             self.assertIsNone(loaded["max_cycles"])
             self.assertEqual(loaded, json.loads(path.read_text(encoding="utf-8")))
 
@@ -59,7 +59,7 @@ class V110Tests(unittest.TestCase):
             self.make_repo(project)
             home = Path(tmp) / "home"
             unlimited = register_job(str(uuid.uuid4()), project, "goal", home, start_watchdog=False)
-            self.assertEqual(3, unlimited["schema_version"])
+            self.assertEqual(4, unlimited["schema_version"])
             self.assertIsNone(unlimited["max_cycles"])
             finite = register_job(str(uuid.uuid4()), project, "goal", home, max_cycles=7, start_watchdog=False)
             self.assertEqual(7, finite["max_cycles"])
@@ -132,9 +132,11 @@ class V110Tests(unittest.TestCase):
             self.assertEqual(1, len(list((home / "auto-resume" / "jobs").glob("*.json"))))
 
     def test_preflight_opt_out_and_missing_conditions_are_skipped(self):
-        self.assertEqual("SKIPPED", preflight(opt_out=True)["outcome"])
-        self.assertEqual("SKIPPED", preflight()["outcome"])
-        self.assertEqual("SKIPPED", preflight(thread_id="bad", project="missing", goal="x")["outcome"])
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual("SKIPPED", preflight(codex_home=tmp, opt_out=True)["outcome"])
+            self.assertEqual("SKIPPED", preflight(codex_home=tmp)["outcome"])
+            self.assertEqual("SKIPPED", preflight(thread_id="bad", project="missing", goal="x",
+                                                   codex_home=tmp)["outcome"])
 
     def test_preflight_registers_eligible_task_once(self):
         with tempfile.TemporaryDirectory() as tmp:

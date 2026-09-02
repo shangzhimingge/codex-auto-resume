@@ -1,6 +1,6 @@
 interface:
   display_name: "Codex Auto Resume"
-  short_description: "Safely resume eligible Codex tasks after subscription usage resets."
-  default_prompt: "Use $codex-auto-resume to preflight this task, keep safe checkpoints, and resume it after included-usage windows reset."
+  short_description: "Resume any Codex task after included-usage resets."
+  default_prompt: "Use $codex-auto-resume to preflight this user or subagent turn and resume its exact thread after included-usage windows reset."
 policy:
   allow_implicit_invocation: true

@@ -20,10 +20,11 @@ REQUIRED_JOB_FIELDS = (
     "schema_version", "job_id", "thread_id", "task_id", "thread_source",
     "parent_thread_id", "parent_task_id", "root_thread_id", "agent_path",
     "rollout_path", "goal_source", "fork_timestamp", "association_source",
-    "superseded_by", "project_root", "original_goal",
+    "superseded_by", "workspace_kind", "workspace_root", "project_root", "original_goal",
     "status", "billing_policy", "limit_id", "max_cycles", "completed_cycles",
     "poll_interval_seconds", "safety_margin_seconds", "checkpoint_path",
-    "expected_repo_snapshot", "watchdog_pid", "created_at", "updated_at", "last_error",
+    "expected_workspace_snapshot", "expected_repo_snapshot", "watchdog_pid",
+    "created_at", "updated_at", "last_error",
 )
 
 
@@ -46,8 +47,9 @@ def ensure_runtime_layout(explicit=None, best_effort=False):
         "logs": root / "logs",
         "state": root / "state",
         "handoffs": root / "handoffs",
+        "workspaces": root / "workspaces",
     }
-    for name in ("jobs", "checkpoints", "logs", "state", "handoffs"):
+    for name in ("jobs", "checkpoints", "logs", "state", "handoffs", "workspaces"):
         layout[name].mkdir(parents=True, exist_ok=True)
     migrations = {
         root / "daemon-state.json": layout["state"] / "daemon-state.json",
@@ -97,8 +99,13 @@ def validate_job(job):
     extra = set(job) - set(REQUIRED_JOB_FIELDS)
     if missing or extra:
         raise ValueError(f"invalid job fields: missing={sorted(missing)}, extra={sorted(extra)}")
-    if job.get("schema_version") != 3:
+    if job.get("schema_version") != 4:
         raise ValueError("unsupported job schema")
+    if job.get("workspace_kind") not in {"git", "directory", "managed"}:
+        raise ValueError("unsupported workspace kind")
+    if (job.get("workspace_root") != job.get("project_root") or
+            job.get("expected_workspace_snapshot") != job.get("expected_repo_snapshot")):
+        raise ValueError("workspace compatibility mirrors diverged")
     maximum = job.get("max_cycles")
     if maximum is not None and (isinstance(maximum, bool) or not isinstance(maximum, int) or maximum <= 0):
         raise ValueError("max_cycles must be null or a positive integer")
@@ -137,6 +144,12 @@ def migrate_job(job):
         # persisted.  Normalize them in place rather than stranding jobs.
         migrated.setdefault("fork_timestamp", None)
         migrated.setdefault("association_source", "legacy")
+        migrated.update({
+            "schema_version": 4,
+            "workspace_kind": "git",
+            "workspace_root": migrated.get("project_root"),
+            "expected_workspace_snapshot": migrated.get("expected_repo_snapshot"),
+        })
     return validate_job(migrated)
 
 
@@ -144,14 +157,21 @@ def job_state_lock_path(job_path):
     return Path(job_path).with_suffix(".state.lock")
 
 
-def project_mutex_path(codex_home, project_root):
+def workspace_mutex_path(codex_home, workspace_root):
     layout = ensure_runtime_layout(codex_home)
-    key = hashlib.sha256(str(Path(project_root).resolve()).encode("utf-8")).hexdigest()[:24]
+    key = hashlib.sha256(str(Path(workspace_root).resolve()).encode("utf-8")).hexdigest()[:24]
+    # Keep the v1.4 filename so an in-flight upgraded Git job cannot acquire a
+    # second lease under a renamed lock.
     return layout["state"] / f"project-{key}.lock"
 
 
-def project_lease_path(codex_home, project_root):
-    return project_mutex_path(codex_home, project_root).with_suffix(".resume.json")
+def workspace_lease_path(codex_home, workspace_root):
+    return workspace_mutex_path(codex_home, workspace_root).with_suffix(".resume.json")
+
+
+# Public compatibility aliases for v1.4 callers.
+project_mutex_path = workspace_mutex_path
+project_lease_path = workspace_lease_path
 
 
 def merge_status(current, requested):

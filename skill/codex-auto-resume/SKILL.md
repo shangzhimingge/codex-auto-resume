@@ -1,79 +1,51 @@
 ---
 name: codex-auto-resume
-description: Preflight every eligible Codex user or subagent turn and resume its exact thread after included usage-window interruptions.
+description: Use at the start of every Codex user turn, automatic resume turn, and subagent trigger turn, including questions, non-Git work, and tasks whose working directory changes.
 ---
 
 # Codex 自动续作
 
-每个用户 turn 和子代理 trigger turn 只执行一次确定性预检。运行时仅使用 Python 标准库，并始终保持 `billing_policy=included_only`。
+每个 turn 在实质工作前只运行一次确定性预检。始终保持 `billing_policy=included_only`。
 
-## 路径初始化
+## 每 turn 预检
 
 ```powershell
 $CODEX_ROOT = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME ".codex" }
 $SKILL_ROOT = Split-Path -Parent (Resolve-Path (Join-Path $CODEX_ROOT "skills/codex-auto-resume/SKILL.md"))
-$THREAD_ID = "<UUID>"
-$PROJECT = (Resolve-Path "<TARGET_GIT_PROJECT>").Path
-$ORIGINAL_GOAL = "<ORIGINAL_GOAL>"
-```
-
-## 每 turn 预检
-
-默认从 `CODEX_THREAD_ID` 与 `$CODEX_HOME/sessions/**/rollout-*.jsonl` 解析实际 thread、`task_started.turn_id`、cwd、目标与父子谱系：
-
-```powershell
 python "$SKILL_ROOT/scripts/preflight.py"
 ```
 
-显式上下文仍受支持：
-
-```powershell
-python "$SKILL_ROOT/scripts/preflight.py" --thread-id "$THREAD_ID" --project "$PROJECT" --goal "$ORIGINAL_GOAL"
-```
-
-消息包含 `AUTO_RESUME=OFF` 或“本任务禁用自动续作”时执行：
+消息包含 `AUTO_RESUME=OFF` 或“本任务禁用自动续作”时运行：
 
 ```powershell
 python "$SKILL_ROOT/scripts/preflight.py" --opt-out
 ```
 
-合格预检在注册锁释放后按需启动共享 daemon；Windows 使用无窗口、脱离进程组，macOS/Linux 使用新会话。跳过、opt-out 和 `--no-start` 均不启动 daemon，其中 `--no-start` 也不启动 watchdog。daemon 内部发现直接调用注册层，不会递归触发 daemon 启动。
+默认从可信环境和 rollout 解析实际 thread、`task_started.turn_id`、目标与谱系。工作区解析顺序固定为：显式 `--project`；实际 cwd Git 根；rollout cwd Git 根；实际目录；rollout 目录；`$CODEX_HOME/auto-resume/workspaces/<thread>` 托管目录。目录工作区快照只记录规范根目录与目录 stat 身份，不递归读取内容。Git 工作区继续保存 HEAD、porcelain 与变更文件摘要。
 
-可解析的 opt-out 写入 `(thread, task)` tombstone。注册键为 `actual_thread_id + task_id + git_root`：同一 turn 幂等；同一 thread/project 的新 task supersede 旧活动 job；父子代理拥有独立 job。自动恢复 turn 通过 `CODEX_AUTO_RESUME_JOB_ID/TASK_ID` 和 `[CODEX_AUTO_RESUME]` 标记归并回原 job。
+普通根任务缺少可见目标时使用固定 continuation 目标。无 cwd 的子代理继承唯一父工作区；父任务不唯一时使用自己的托管目录。每个子代理仍以自己的实际 thread/task 注册独立 job，父子可关联到不同工作区，只有共享工作区才共享 lease。
 
-## 手动注册
+注册键为 `actual_thread_id + task_id + workspace_root`。同一 turn 幂等；同一 thread/workspace 的新 task supersede 旧活动 job。自动恢复 turn 通过 `CODEX_AUTO_RESUME_JOB_ID/TASK_ID` 和 `[CODEX_AUTO_RESUME]` 归并回原 job。身份缺失或冲突、显式 opt-out、运行环境损坏才产生 `SKIPPED`。
+
+成功注册或复用后，在注册锁释放后按需启动共享 daemon 与 watchdog。`--no-start` 同时禁止两者。
+
+## 手动注册与检查点
 
 ```powershell
+$THREAD_ID = "<UUID>"
+$PROJECT = (Resolve-Path "<TARGET_WORKSPACE>").Path
+$ORIGINAL_GOAL = "<ORIGINAL_GOAL>"
 python "$SKILL_ROOT/scripts/register.py" --thread-id "$THREAD_ID" --project "$PROJECT" --goal "$ORIGINAL_GOAL"
-```
-
-子代理可额外传 `--task-id`、`--parent-thread-id`、`--parent-task-id`、`--root-thread-id`、`--agent-path` 与 `--rollout-path`。线程 UUID 必须是原样规范小写 UUID。
-
-## 检查点
-
-```powershell
 python "$SKILL_ROOT/scripts/checkpoint.py" --job-id "$JOB_ID" --set "CURRENT_STATE=<STATE>" --set "NEXT_ACTION=<NEXT>"
 ```
 
-完成全部目标和验证后：
+完成全部目标和验证后，将 `AUTO_RESUME_STATUS` 设置为 `DONE`。线程 UUID 必须保持规范小写原值。
 
-```powershell
-python "$SKILL_ROOT/scripts/checkpoint.py" --job-id "$JOB_ID" --set "AUTO_RESUME_STATUS=DONE"
-```
+## 恢复与诊断
 
-## 发现、协调与恢复
+daemon 对 sessions 做有界增量扫描，容忍半行、截断、轮转和单文件损坏。恢复按叶子优先；同工作区由 lease 串行，不同工作区可保持父子关联。任务状态经原子更新与固定锁序合并，终态不可回退。handoff 按 `(path, revision)` 发布并仅消费一次。
 
-daemon 对 sessions 做有界增量扫描，容忍半行、截断、轮转和单文件损坏。每个新 task 均先尝试精确 provisional 认领，再分类输入；只有存在该 turn 的匹配 launch 时，续作标记或精确内部预检才确认。无匹配 launch 的标记文本按普通用户 turn 注册，provisional 不写 seen。正常完成的历史 turn 只推进游标。usage-limit 中断的 user/child turn 进入 `WAITING_RESET`。
-
-同项目恢复由项目锁串行，并按叶子优先：grandchild → child → parent。任务状态通过统一原子更新路径与固定锁序合并，终态不可回退。同谱系受管变更推进 lineage snapshot；等待期间的外部或不同谱系变更进入 `NEEDS_USER`。子代理持有项目 lease 时先 finalized 带 revision 的 handoff，再发布终态与 lineage，最后释放 lease；父任务按 `(path, revision)` 精确读取并仅消费一次。
-
-preflight 与 daemon 通过同一 per-job startup lock 在锁内重检 watchdog lease。若子代理在祖先已经 claim 项目后注册，注册层会写入 descendant-pending；祖先在 spawn 前、监督周期和提交前检查该标记，退回 `WAITING_RESET` 并释放 lease。父任务提示中的 handoff path 与 revision 分行，path 可直接读取。
-
-daemon 以 `daemon.lock` 作为运行实例权威，并用 `daemon.startup.lock` 串行化检查、启动和 PID/心跳握手。
-
-恢复始终使用保存的实际 thread UUID，并校验首个 `thread.started`。恢复子进程持续探测 primary/secondary included window；任一耗尽即终止整个进程组并回到 `WAITING_RESET`。
-
-## 诊断
+恢复只使用保存的实际 thread UUID并校验首个 `thread.started`。恢复进程持续探测 primary/secondary included window；任一耗尽即终止进程组并回到 `WAITING_RESET`。
 
 ```powershell
 python "$SKILL_ROOT/scripts/auto_resume.py" status --job "$JOB_ID"
@@ -81,5 +53,3 @@ python "$SKILL_ROOT/scripts/auto_resume.py" probe-limits
 python "$SKILL_ROOT/scripts/auto_resume.py" daemon status
 python "$SKILL_ROOT/scripts/auto_resume.py" daemon scan
 ```
-
-`daemon scan` 输出 `discovered/registered/reconciled/ignored/deferred` 与逐文件错误。终态包括 `DONE`、`SUPERSEDED`、`NEEDS_USER`、`MAX_CYCLES` 与 `ERROR`。

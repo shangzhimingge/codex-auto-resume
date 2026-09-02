@@ -14,8 +14,9 @@ from .resume import ResumeError, ResumeInterrupted, resume_thread
 from .session_tasks import close_resume_launch, record_resume_launch
 from .state import (ACTIVE_STATES, TERMINAL_STATES, FileLock, atomic_write_json,
                     ensure_runtime_layout, job_state_lock_path, load_job, load_json,
-                    project_lease_path, project_mutex_path, save_job, update_job)
+                    workspace_lease_path, workspace_mutex_path, save_job, update_job)
 from .watchdog_lease import WatchdogLease
+from .workspace import workspace_from_job
 
 RESUME_PROMPT = """[CODEX_AUTO_RESUME]
 读取自动续作检查点：
@@ -24,7 +25,7 @@ RESUME_PROMPT = """[CODEX_AUTO_RESUME]
 {goal}
 先读取并合并以下未消费的子代理交付：
 {handoffs}
-核对 git 状态、差异、测试和检查点，只从 NEXT_ACTION 开始。完成全部目标并通过最终验证后，将 AUTO_RESUME_STATUS 写为 DONE。
+核对工作区状态、差异、测试和检查点，只从 NEXT_ACTION 开始。完成全部目标并通过最终验证后，将 AUTO_RESUME_STATUS 写为 DONE。
 """
 
 
@@ -39,6 +40,10 @@ def decide_action(job, repo_ok, exhausted):
 
 
 def _set(job_path, job, status, error=None, **fields):
+    if "expected_workspace_snapshot" in fields:
+        fields["expected_repo_snapshot"] = fields["expected_workspace_snapshot"]
+    elif "expected_repo_snapshot" in fields:
+        fields["expected_workspace_snapshot"] = fields["expected_repo_snapshot"]
     def mutate(current):
         if current.get("status") in TERMINAL_STATES:
             return
@@ -62,6 +67,14 @@ def _settled(project, delay=2):
     time.sleep(delay)
     second = fingerprint(project)
     return second if first == second else None
+
+
+def _snapshot(job):
+    return fingerprint(workspace_from_job(job))
+
+
+def _snapshot_fields(snapshot):
+    return {"expected_workspace_snapshot": snapshot, "expected_repo_snapshot": snapshot}
 
 
 def _next_wait(deadline, now, poll_interval, safety_margin):
@@ -104,11 +117,11 @@ def active_descendants(job, jobs_dir):
 
 
 def _project_lock(job, codex_home):
-    return project_mutex_path(codex_home, job["project_root"])
+    return workspace_mutex_path(codex_home, job["workspace_root"])
 
 
 def _project_lease(job, codex_home):
-    return project_lease_path(codex_home, job["project_root"])
+    return workspace_lease_path(codex_home, job["workspace_root"])
 
 
 def _claim_project(job, codex_home):
@@ -156,27 +169,35 @@ def _release_project(job, codex_home, token):
 def _lineage_path(job, codex_home):
     layout = ensure_runtime_layout(codex_home)
     key = hashlib.sha256(
-        f"{job['root_thread_id']}\0{job['project_root']}".encode("utf-8")
+        f"{job['root_thread_id']}\0{job['workspace_root']}".encode("utf-8")
     ).hexdigest()[:24]
     return layout["state"] / f"lineage-{key}.json"
 
 
 def _advance_lineage(job, codex_home, snapshot):
     atomic_write_json(_lineage_path(job, codex_home), {
-        "root_thread_id": job["root_thread_id"], "project_root": job["project_root"],
+        "root_thread_id": job["root_thread_id"], "workspace_kind": job["workspace_kind"],
+        "workspace_root": job["workspace_root"], "project_root": job["project_root"],
         "job_id": job["job_id"], "snapshot": snapshot,
     })
 
 
 def _lineage_accepts(job, codex_home, snapshot):
-    if repo_matches(Path(job["project_root"]), job["expected_repo_snapshot"]):
+    if repo_matches(workspace_from_job(job), job["expected_workspace_snapshot"]):
         return True
     try:
         value = load_json(_lineage_path(job, codex_home))
     except (OSError, ValueError):
         return False
+    workspace_matches = (
+        value.get("workspace_kind") == job.get("workspace_kind") and
+        value.get("workspace_root") == job.get("workspace_root"))
+    legacy_git_matches = (
+        job.get("workspace_kind") == "git" and
+        value.get("workspace_kind") is None and
+        value.get("project_root") == job.get("workspace_root"))
     return (value.get("root_thread_id") == job.get("root_thread_id") and
-            value.get("project_root") == job.get("project_root") and value.get("snapshot") == snapshot)
+            (workspace_matches or legacy_git_matches) and value.get("snapshot") == snapshot)
 
 
 def _handoff_payload(job, status, final_text=None, events=None):
@@ -235,7 +256,7 @@ def _publish_child_terminal_locked(job_path, codex_home, status, final_text=None
             job["status"] = requested
             job["last_error"] = error
         if snapshot is not None:
-            job["expected_repo_snapshot"] = snapshot
+            job.update(_snapshot_fields(snapshot))
         save_job(job_path, job)
         if snapshot is not None:
             _advance_lineage(job, codex_home, snapshot)
@@ -297,10 +318,10 @@ def _run_job_loop(job_path, codex_command, sleep, now, once, lease):
             return "ERROR"
         if deadline is not None:
             if job["status"] != "WAITING_RESET":
-                job["expected_repo_snapshot"] = fingerprint(job["project_root"])
-                _advance_lineage(job, codex_home, job["expected_repo_snapshot"])
+                job.update(_snapshot_fields(_snapshot(job)))
+                _advance_lineage(job, codex_home, job["expected_workspace_snapshot"])
             _set(job_path, job, "WAITING_RESET",
-                 expected_repo_snapshot=job.get("expected_repo_snapshot"))
+                 expected_workspace_snapshot=job.get("expected_workspace_snapshot"))
             wait = _next_wait(deadline, now(), job["poll_interval_seconds"], job["safety_margin_seconds"])
             if once:
                 return "WAITING_RESET"
@@ -320,7 +341,8 @@ def _run_job_loop(job_path, codex_command, sleep, now, once, lease):
             lease.heartbeat()
             sleep(job["poll_interval_seconds"])
             continue
-        project = Path(job["project_root"])
+        workspace = workspace_from_job(job)
+        project = workspace.root
         project_token = _claim_project(job, codex_home)
         if project_token is None:
             if once:
@@ -333,16 +355,16 @@ def _run_job_loop(job_path, codex_command, sleep, now, once, lease):
               if _project_preempted(job, codex_home, project_token, locked=True):
                   _set(job_path, job, "WAITING_RESET")
                   return "WAITING_RESET"
-              settled = _settled(project)
+              settled = _settled(workspace)
               if settled is None or not _lineage_accepts(job, codex_home, settled):
-                  error = "repository changed outside the managed lineage"
+                  error = "workspace changed outside the managed lineage"
                   if job.get("parent_thread_id"):
                       return _publish_child_terminal_locked(
                           job_path, codex_home, "NEEDS_USER", error=error)["status"]
                   _set(job_path, job, "NEEDS_USER", error)
                   return "NEEDS_USER"
-              job["expected_repo_snapshot"] = settled
-              _set(job_path, job, "RESUMING", expected_repo_snapshot=settled)
+              job.update(_snapshot_fields(settled))
+              _set(job_path, job, "RESUMING", expected_workspace_snapshot=settled)
               handoffs = pending_handoffs(codex_home, job["thread_id"], job["task_id"])
               handoff_receipts = [(item["path"], item["revision"]) for item in handoffs]
               prompt = RESUME_PROMPT.format(checkpoint=job["checkpoint_path"], goal=job["original_goal"],
@@ -372,10 +394,10 @@ def _run_job_loop(job_path, codex_command, sleep, now, once, lease):
                     with FileLock(_project_lock(job, codex_home),
                                   timeout=max(10, job["poll_interval_seconds"])):
                         if exc.thread_verified:
-                            snapshot = fingerprint(project)
+                            snapshot = _snapshot(job)
                             job = update_job(job_path, lambda value: value.update(
                                 completed_cycles=value["completed_cycles"] + 1,
-                                expected_repo_snapshot=snapshot)
+                                **_snapshot_fields(snapshot))
                                 if value.get("status") not in TERMINAL_STATES else None)
                             _advance_lineage(job, codex_home, snapshot)
                         _set(job_path, job, "WAITING_RESET")
@@ -383,10 +405,10 @@ def _run_job_loop(job_path, codex_command, sleep, now, once, lease):
                         return "WAITING_RESET"
                     continue
                 if exc.thread_verified:
-                    snapshot = fingerprint(project)
+                    snapshot = _snapshot(job)
                     job = update_job(job_path, lambda value: value.update(
                         completed_cycles=value["completed_cycles"] + 1,
-                        expected_repo_snapshot=snapshot) if value.get("status") not in TERMINAL_STATES else None)
+                        **_snapshot_fields(snapshot)) if value.get("status") not in TERMINAL_STATES else None)
                 if exc.reason == "superseded":
                     _set(job_path, job, "SUPERSEDED")
                     return "SUPERSEDED"
@@ -411,26 +433,26 @@ def _run_job_loop(job_path, codex_command, sleep, now, once, lease):
                 _set(job_path, job, "NEEDS_USER", str(exc))
                 return "NEEDS_USER"
             with FileLock(_project_lock(job, codex_home), timeout=max(10, job["poll_interval_seconds"])):
-                snapshot = fingerprint(project)
+                snapshot = _snapshot(job)
                 terminal_outcome = None
                 if _project_preempted(job, codex_home, project_token, locked=True):
                     job = update_job(job_path, lambda value: value.update(
-                        expected_repo_snapshot=snapshot)
+                        **_snapshot_fields(snapshot))
                         if value.get("status") not in TERMINAL_STATES else None)
-                    _set(job_path, job, "WAITING_RESET", expected_repo_snapshot=snapshot)
+                    _set(job_path, job, "WAITING_RESET", expected_workspace_snapshot=snapshot)
                     _advance_lineage(job, codex_home, snapshot)
                     terminal_outcome = "WAITING_RESET"
                 else:
                     job = update_job(job_path, lambda value: value.update(
                         completed_cycles=value["completed_cycles"] + 1,
-                        expected_repo_snapshot=snapshot)
+                        **_snapshot_fields(snapshot))
                         if value.get("status") not in TERMINAL_STATES else None)
                 if terminal_outcome is None and _checkpoint_done(job):
                     if job.get("parent_thread_id"):
                         job = _publish_child_terminal_locked(
                             job_path, codex_home, "DONE", result.final_text, result.events, snapshot)
                     else:
-                        _set(job_path, job, "DONE", expected_repo_snapshot=snapshot)
+                        _set(job_path, job, "DONE", expected_workspace_snapshot=snapshot)
                         _advance_lineage(job, codex_home, snapshot)
                     terminal_outcome = job["status"]
                 elif (terminal_outcome is None and job["max_cycles"] is not None and
@@ -439,11 +461,11 @@ def _run_job_loop(job_path, codex_command, sleep, now, once, lease):
                         job = _publish_child_terminal_locked(
                             job_path, codex_home, "MAX_CYCLES", result.final_text, result.events, snapshot)
                     else:
-                        _set(job_path, job, "MAX_CYCLES", expected_repo_snapshot=snapshot)
+                        _set(job_path, job, "MAX_CYCLES", expected_workspace_snapshot=snapshot)
                         _advance_lineage(job, codex_home, snapshot)
                     terminal_outcome = job["status"]
                 elif terminal_outcome is None:
-                    _set(job_path, job, "RUNNING", expected_repo_snapshot=snapshot)
+                    _set(job_path, job, "RUNNING", expected_workspace_snapshot=snapshot)
                     _advance_lineage(job, codex_home, snapshot)
         finally:
             # Covers validation failures and early returns inside the lease.

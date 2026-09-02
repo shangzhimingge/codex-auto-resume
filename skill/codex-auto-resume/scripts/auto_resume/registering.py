@@ -9,12 +9,13 @@ import uuid
 from pathlib import Path
 
 from .checkpoints import write_checkpoint
-from .repo import fingerprint, validate_repo
+from .repo import fingerprint
 from .resume import _terminate_process_tree, validate_thread_id
 from .state import (ACTIVE_STATES, FileLock, atomic_write_json, job_state_locks,
-                    load_job, load_json, project_lease_path, project_mutex_path,
+                    load_job, load_json, workspace_lease_path, workspace_mutex_path,
                     runtime_home, save_job, utc_now)
 from .watchdog_lease import read_lease, watchdog_lease_is_live
+from .workspace import Workspace, resolve_workspace, workspace_from_job
 
 
 def windows_creation_flags():
@@ -58,7 +59,7 @@ def launch_watchdog(job_path, codex_command=None, handshake_timeout=10):
     if codex_command is not None:
         argv.extend(("--codex-command-json", json.dumps(list(codex_command))))
     process = subprocess.Popen(
-        argv, cwd=job["project_root"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        argv, cwd=job["workspace_root"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL, close_fds=True, shell=False, **detached_process_options(),
     )
     deadline = time.monotonic() + handshake_timeout
@@ -152,7 +153,7 @@ def _mark_ancestor_lease_pending(codex_home, project, child, jobs):
     The caller holds the project mutex, so the lease document needs no second
     lock and preserves the global project -> job-state ordering.
     """
-    path = project_lease_path(codex_home, project)
+    path = workspace_lease_path(codex_home, project)
     try:
         lease = load_json(path)
     except (OSError, ValueError):
@@ -174,7 +175,8 @@ def _register_job(thread_id, project, original_goal, codex_home=None, max_cycles
                   watchdog_codex_command=None, task_id=None, thread_source="explicit",
                   parent_thread_id=None, parent_task_id=None, root_thread_id=None,
                   agent_path=None, rollout_path=None, goal_source="explicit",
-                  interrupted=False, fork_timestamp=None, association_source=None):
+                  interrupted=False, fork_timestamp=None, association_source=None,
+                  workspace_kind=None):
     thread_id = validate_thread_id(thread_id)
     task_id = str(task_id or thread_id).strip()
     if not task_id:
@@ -186,7 +188,10 @@ def _register_job(thread_id, project, original_goal, codex_home=None, max_cycles
     association_source = str(association_source or
                              ("explicit" if parent_task_id is not None else "unassociated"))
     root_thread_id = validate_thread_id(str(root_thread_id or thread_id))
-    project = validate_repo(project)
+    workspace = (project if isinstance(project, Workspace) else
+                 (Workspace(workspace_kind, project) if workspace_kind else
+                  resolve_workspace(thread_id, explicit=project, codex_home=codex_home)))
+    project = workspace.root
     if not original_goal.strip():
         raise ValueError("original goal is required")
     if max_cycles is not None and (isinstance(max_cycles, bool) or
@@ -204,8 +209,9 @@ def _register_job(thread_id, project, original_goal, codex_home=None, max_cycles
     checkpoint_path = checkpoints / f"{job_id}.md"
     boundary_lock = jobs / f"{_registration_lock_id(thread_id, project)}.register.lock"
     created = utc_now()
+    snapshot = fingerprint(workspace)
     new_job = {
-        "schema_version": 3, "job_id": job_id, "thread_id": thread_id, "task_id": task_id,
+        "schema_version": 4, "job_id": job_id, "thread_id": thread_id, "task_id": task_id,
         "thread_source": str(thread_source), "parent_thread_id": parent_thread_id,
         "parent_task_id": str(parent_task_id) if parent_task_id is not None else None,
         "root_thread_id": root_thread_id,
@@ -213,12 +219,14 @@ def _register_job(thread_id, project, original_goal, codex_home=None, max_cycles
         "rollout_path": str(Path(rollout_path).resolve()) if rollout_path else None,
         "goal_source": str(goal_source), "fork_timestamp": fork_timestamp,
         "association_source": association_source, "superseded_by": None,
+        "workspace_kind": workspace.kind, "workspace_root": str(project),
         "project_root": str(project), "original_goal": original_goal,
         "status": "WAITING_RESET" if interrupted else "REGISTERED",
         "billing_policy": "included_only", "limit_id": "codex", "max_cycles": max_cycles,
         "completed_cycles": 0, "poll_interval_seconds": int(poll_interval_seconds),
         "safety_margin_seconds": int(safety_margin_seconds), "checkpoint_path": str(checkpoint_path),
-        "expected_repo_snapshot": fingerprint(project), "watchdog_pid": None,
+        "expected_workspace_snapshot": snapshot,
+        "expected_repo_snapshot": snapshot, "watchdog_pid": None,
         "created_at": created, "updated_at": created, "last_error": None,
     }
     incoming = {
@@ -232,7 +240,7 @@ def _register_job(thread_id, project, original_goal, codex_home=None, max_cycles
     }
 
     with FileLock(boundary_lock, timeout=10):
-        with FileLock(project_mutex_path(codex_home, project), timeout=10):
+        with FileLock(workspace_mutex_path(codex_home, project), timeout=10):
             all_paths = sorted(path for path in jobs.glob("*.json")
                                if not path.name.endswith(".watchdog.json"))
             with job_state_locks([*all_paths, job_path], timeout=10):
@@ -246,9 +254,10 @@ def _register_job(thread_id, project, original_goal, codex_home=None, max_cycles
                     existing = next((item for item in loaded_jobs
                                      if item.get("job_id") == job_id),
                                     load_job(job_path, state_locked=True))
+                    existing_workspace = workspace_from_job(existing)
                     same = (existing.get("thread_id") == thread_id and
                             existing.get("task_id") == task_id and
-                            Path(existing.get("project_root", "")) == project)
+                            existing_workspace == workspace)
                     if not same:
                         raise ValueError(f"job id collision: {job_id}")
                     result = merge_registration(existing, incoming)
@@ -261,7 +270,7 @@ def _register_job(thread_id, project, original_goal, codex_home=None, max_cycles
                         if candidate is None:
                             continue
                         if (candidate.get("thread_id") == thread_id and
-                                Path(candidate.get("project_root", "")) == project and
+                                workspace_from_job(candidate) == workspace and
                                 candidate.get("status") in ACTIVE_STATES):
                             candidate["status"] = "SUPERSEDED"
                             candidate["superseded_by"] = job_id

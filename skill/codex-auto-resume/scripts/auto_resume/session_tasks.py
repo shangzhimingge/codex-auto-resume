@@ -614,11 +614,5 @@ def discover_session_updates(codex_home=None, sessions_root=None, max_files=MAX_
 
 
 def git_root(cwd):
-    if not cwd: return None
-    try:
-        result = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=cwd, text=True,
-                                encoding="utf-8", errors="replace", stdout=subprocess.PIPE,
-                                stderr=subprocess.DEVNULL, timeout=5, check=True)
-        return Path(result.stdout.strip()).resolve()
-    except (OSError, subprocess.SubprocessError):
-        return None
+    from .workspace import git_root as resolve_git_root
+    return resolve_git_root(cwd)

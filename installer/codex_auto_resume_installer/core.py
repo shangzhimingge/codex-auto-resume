@@ -13,7 +13,7 @@ from pathlib import Path
 from .services import file_digest, service_adapter
 
 PRODUCT = "io.github.shangzhimingge.codex-auto-resume"
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 BEGIN = "<!-- BEGIN CODEX-AUTO-RESUME MANAGED BLOCK -->"
 END = "<!-- END CODEX-AUTO-RESUME MANAGED BLOCK -->"
 MANIFEST_SCHEMA = 1
@@ -259,7 +259,6 @@ def _restore_file(path, existed, raw):
 def _prerequisites():
     return {
         "python": sys.version_info >= (3, 9),
-        "git": shutil.which("git") is not None,
         "codex": shutil.which("codex") is not None,
     }
 
@@ -272,8 +271,9 @@ def _prepare_runtime_layout(codex_home):
         "checkpoints": root / "checkpoints",
         "logs": root / "logs",
         "state": root / "state",
+        "workspaces": root / "workspaces",
     }
-    for name in ("jobs", "checkpoints", "logs", "state"):
+    for name in ("jobs", "checkpoints", "logs", "state", "workspaces"):
         layout[name].mkdir(parents=True, exist_ok=True)
     migrations = {
         root / "daemon-state.json": layout["state"] / "daemon-state.json",

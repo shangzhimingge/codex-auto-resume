@@ -4,11 +4,15 @@ import time
 from pathlib import Path
 
 from .registering import _register_job
-from .repo import validate_repo
 from .resume import validate_thread_id
 from .session_tasks import (SUBAGENT_FALLBACK_GOAL, confirm_resume_launch_for_job,
-                            git_root, resolve_current_task)
+                            resolve_current_task)
 from .state import FileLock, atomic_write_json, ensure_runtime_layout, load_job, load_json, runtime_home
+from .workspace import resolve_workspace, workspace_from_job
+
+
+ROOT_FALLBACK_GOAL = "Continue the current Codex task."
+_ACTUAL_CWD = object()
 
 
 def _ignored_path(codex_home):
@@ -70,7 +74,9 @@ def _ensure_daemon_for_preflight(codex_home, start_watchdog):
 def preflight(thread_id=None, project=None, goal=None, codex_home=None, opt_out=False,
               start_watchdog=True, max_cycles=None, task_id=None, parent_thread_id=None,
               parent_task_id=None, root_thread_id=None, agent_path=None, rollout_path=None,
-              sessions_root=None, fork_timestamp=None, association_source=None):
+              sessions_root=None, fork_timestamp=None, association_source=None,
+              actual_cwd=_ACTUAL_CWD):
+    effective_actual_cwd = Path.cwd() if actual_cwd is _ACTUAL_CWD else actual_cwd
     env_thread = os.environ.get("CODEX_THREAD_ID")
     if thread_id and env_thread and str(thread_id) != env_thread:
         return {"outcome": "SKIPPED", "reason": "thread_mismatch"}
@@ -87,8 +93,10 @@ def preflight(thread_id=None, project=None, goal=None, codex_home=None, opt_out=
                     effective_thread != existing["thread_id"] or
                     internal_task_id != existing["task_id"]):
                 raise ValueError("internal identity mismatch")
-            candidate_project = validate_repo(Path(project)) if project else git_root(Path.cwd())
-            if candidate_project is None or Path(existing["project_root"]) != candidate_project:
+            candidate_workspace = resolve_workspace(
+                existing["thread_id"], explicit=project, actual_cwd=effective_actual_cwd,
+                codex_home=codex_home)
+            if workspace_from_job(existing) != candidate_workspace:
                 raise ValueError("internal project mismatch")
             if opt_out:
                 _ignore_task(codex_home, existing["thread_id"], existing["task_id"])
@@ -130,21 +138,29 @@ def preflight(thread_id=None, project=None, goal=None, codex_home=None, opt_out=
         return {"outcome": "SKIPPED", "reason": "missing_task"}
     if task_is_ignored(codex_home, effective_thread, effective_task):
         return {"outcome": "SKIPPED", "reason": "task_opted_out"}
-    candidate_project = Path(project) if project else git_root((discovered or {}).get("cwd") or Path.cwd())
-    if candidate_project is None:
-        return {"outcome": "SKIPPED", "reason": "missing_project"}
-    effective_goal = str(goal if goal is not None else (discovered or {}).get("goal") or "").strip()
-    if not effective_goal and (discovered or {}).get("parent_thread_id"):
-        effective_goal = SUBAGENT_FALLBACK_GOAL
-    if not effective_goal:
-        return {"outcome": "SKIPPED", "reason": "missing_goal"}
     try:
         effective_thread = validate_thread_id(effective_thread)
-        candidate_project = validate_repo(candidate_project)
     except (ValueError, RuntimeError, OSError):
         return {"outcome": "SKIPPED", "reason": "ineligible_context"}
     metadata = discovered or {}
+    effective_parent_thread = parent_thread_id or metadata.get("parent_thread_id")
     effective_parent_task = parent_task_id if parent_task_id is not None else metadata.get("parent_task_id")
+    try:
+        candidate_workspace = resolve_workspace(
+            effective_thread, explicit=project, actual_cwd=effective_actual_cwd,
+            rollout_cwd=metadata.get("cwd"), codex_home=codex_home,
+            parent_thread_id=effective_parent_thread, parent_task_id=effective_parent_task)
+    except (ValueError, RuntimeError, OSError):
+        return {"outcome": "SKIPPED", "reason": "ineligible_context"}
+    effective_goal = str(goal if goal is not None else (discovered or {}).get("goal") or "").strip()
+    effective_goal_source = ("explicit" if goal is not None else
+                             metadata.get("goal_source", "rollout"))
+    if not effective_goal and effective_parent_thread:
+        effective_goal = SUBAGENT_FALLBACK_GOAL
+        effective_goal_source = "subagent_fallback"
+    if not effective_goal:
+        effective_goal = ROOT_FALLBACK_GOAL
+        effective_goal_source = "root_fallback"
     effective_association = association_source
     if effective_association is None:
         if parent_task_id is not None:
@@ -154,15 +170,15 @@ def preflight(thread_id=None, project=None, goal=None, codex_home=None, opt_out=
         else:
             effective_association = "unassociated"
     job, outcome = _register_job(
-        effective_thread, candidate_project, effective_goal, codex_home,
+        effective_thread, candidate_workspace, effective_goal, codex_home,
         max_cycles=max_cycles, start_watchdog=start_watchdog, task_id=effective_task,
         thread_source=metadata.get("thread_source", "explicit"),
-        parent_thread_id=parent_thread_id or metadata.get("parent_thread_id"),
+        parent_thread_id=effective_parent_thread,
         parent_task_id=effective_parent_task,
         root_thread_id=root_thread_id or metadata.get("root_thread_id") or effective_thread,
         agent_path=agent_path or metadata.get("agent_path"),
         rollout_path=rollout_path or metadata.get("rollout_path"),
-        goal_source="explicit" if goal is not None else metadata.get("goal_source", "rollout"),
+        goal_source=effective_goal_source,
         interrupted=bool(metadata.get("interrupted")),
         fork_timestamp=(fork_timestamp if fork_timestamp is not None else metadata.get("fork_timestamp")),
         association_source=effective_association,

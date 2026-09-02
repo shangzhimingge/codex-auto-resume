@@ -40,6 +40,7 @@ const expectedFiles = [
   'skill/codex-auto-resume/scripts/auto_resume/state.py',
   'skill/codex-auto-resume/scripts/auto_resume/watch.py',
   'skill/codex-auto-resume/scripts/auto_resume/watchdog_lease.py',
+  'skill/codex-auto-resume/scripts/auto_resume/workspace.py',
   'skill/codex-auto-resume/scripts/checkpoint.py',
   'skill/codex-auto-resume/scripts/daemon.py',
   'skill/codex-auto-resume/scripts/preflight.py',
@@ -87,7 +88,7 @@ test('packed tarball installs and its public bin performs an isolated simulated 
     assertSucceeded(packed);
     const metadata = JSON.parse(packed.stdout)[0];
     const publishedFiles = metadata.files.map((item) => item.path).sort();
-    assert.equal(publishedFiles.length, 37);
+    assert.equal(publishedFiles.length, 38);
     assert.deepEqual(publishedFiles, expectedFiles);
     assert.equal(
       publishedFiles.some((file) => /(^|\/)(tests|docs\/superpowers|__pycache__)(\/|$)|\.py[co]$/.test(file)),
@@ -115,11 +116,11 @@ test('packed tarball installs and its public bin performs an isolated simulated 
     assertSucceeded(result);
 
     const installedSkill = path.join(codexHome, 'skills', 'codex-auto-resume');
-    assert.equal(fs.readFileSync(path.join(installedSkill, 'VERSION'), 'utf8').trim(), '1.4.0');
+    assert.equal(fs.readFileSync(path.join(installedSkill, 'VERSION'), 'utf8').trim(), '1.5.0');
     const manifest = JSON.parse(fs.readFileSync(
       path.join(codexHome, 'auto-resume', 'install-manifest.json'), 'utf8',
     ));
-    assert.equal(manifest.version, '1.4.0');
+    assert.equal(manifest.version, '1.5.0');
     assert.equal(manifest.product, 'io.github.shangzhimingge.codex-auto-resume');
     assert.equal(manifest.service.simulated, true);
     const agents = fs.readFileSync(path.join(codexHome, 'AGENTS.md'), 'utf8');

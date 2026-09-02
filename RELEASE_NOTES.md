@@ -1,3 +1,11 @@
+# 1.5.0
+
+- Preflights every root and subagent turn, including questions and non-Git tasks.
+- Adds `git`, `directory`, and per-thread `managed` workspaces with deterministic resolution and constant-time directory identity snapshots.
+- Preserves independent child thread/task jobs across different workspaces; only shared workspaces share recovery leases.
+- Migrates schema-v3 jobs to schema v4 in place while preserving legacy Git job IDs and compatibility mirrors.
+- Starts the on-demand daemon and watchdog after every successful `REGISTERED` or `REUSED` preflight.
+
 # 1.4.0
 
 - Start the daemon only after a qualified automatic preflight registers or reuses a task.

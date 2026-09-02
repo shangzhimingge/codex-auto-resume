@@ -1,10 +1,10 @@
 # Codex 自动续作
 
-## v1.4 按需后台监督器
+## v1.5 任意工作区预检
 
-v1.4 不再登录自启，而是在首次合格自动预检时隐藏启动唯一 daemon。它保留 v1.3 按实际线程 UUID、`task_started.turn_id` 与 Git 根注册每个 turn 的模型：daemon 从有界 session 尾部发现漏注册任务，同一线程与项目的新 turn 会原子取代旧活动任务，子代理线程保持独立任务。
+v1.5 会预检每个用户与子代理 turn，包括普通问答和非 Git 工作。工作区依次按显式路径、实际 cwd Git 根、rollout cwd Git 根、实际目录、rollout 目录、thread 托管目录解析。注册键为实际线程 UUID、`task_started.turn_id` 与工作区根，子代理始终使用自己的 thread/task 注册独立 job。
 
-恢复按叶子优先并在项目内串行。统一的任务状态更新使用固定锁序，终态不可回退。子代理在持有项目租约期间完成 handoff、谱系与终态发布，父任务按精确 revision 仅消费一次。
+恢复按叶子优先，只有共享工作区的 job 才共用 lease 串行。父子 job 可位于不同工作区并保持谱系与 handoff 关联。Git 工作区保留 HEAD、porcelain 与文件摘要校验；目录和托管工作区只记录根目录 stat 身份，不递归扫描内容。
 
 session 扫描器会在分类每个新 turn 前先尝试精确、可撤销的 provisional 启动认领，即使 task 与首条输入在同批扫描中出现；仅有匹配 launch 时，续作标记或精确内部预检才会确认认领。无匹配 launch 的标记字符串仍按普通用户输入注册。provisional turn 不写 seen。
 
@@ -16,11 +16,11 @@ preflight 与 daemon 共用每任务 startup lock，并在锁内重检持久 wat
 
 [English](./README.md)
 
-![Version](https://img.shields.io/badge/version-v1.4.0-2563eb)
+![Version](https://img.shields.io/badge/version-v1.5.0-2563eb)
 ![License](https://img.shields.io/badge/license-MIT-16a34a)
 ![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-111827)
 
-Codex 自动续作由 Codex Skill 和本地服务组成，适合可能跨越 ChatGPT 订阅用量窗口的 Git 任务。它保存精确的 Codex 线程 UUID、Git 快照和结构化检查点，读取 Codex app-server 报告的真实重置时间，并在订阅包含用量恢复后继续同一线程。
+Codex 自动续作由 Codex Skill 和本地服务组成，适合任何可能跨越 ChatGPT 订阅用量窗口的任务。它保存精确的 Codex thread/task 身份、工作区快照和结构化检查点，读取 Codex app-server 报告的真实重置时间，并在订阅包含用量恢复后继续同一线程。
 
 它不会消耗付费 credits、调用额度重置消费接口、切换到 API 计费、猜测线程、自动批准权限、强制重置 Git，或覆盖仓库中的意外变更。
 
@@ -69,13 +69,13 @@ Python 安装器会：
 ## 运行流程
 
 ```text
-符合条件的 Git 任务开始
-  -> 确定性预检注册精确线程 UUID 与项目
-  -> 原子写入检查点和 Git 快照
+任意用户或子代理 turn 开始
+  -> 确定性预检注册精确 thread/task 与工作区
+  -> 原子写入检查点和工作区快照
   -> 预检在注册后按需隐藏启动唯一 daemon
   -> watchdog 读取 account/rateLimits/read
   -> 所有已耗尽窗口到达真实重置时间
-  -> 检查 Git 是否有外部变更
+  -> Git 工作区检查内容，目录工作区检查根身份
   -> codex exec resume 使用保存的 UUID
   -> 核对首个 thread.started UUID
   -> 从 NEXT_ACTION 继续
@@ -90,6 +90,7 @@ Python 安装器会：
 ├── install-manifest.json
 ├── jobs/<JOB_ID>.json
 ├── checkpoints/<JOB_ID>.md
+├── workspaces/<THREAD_ID>/
 ├── logs/{daemon.stdout.log,daemon.stderr.log}
 └── state/{daemon-state.json,daemon.lock}
 ```
@@ -125,7 +126,7 @@ PowerShell 包装器继续保留：
 
 - Node.js 18+，用于 `npx` 启动器
 - Python 3.9+
-- Git
+- Git（可选；用于完整仓库快照）
 - 已登录的 Codex CLI
 - Windows 10/11、macOS 或 Linux
 

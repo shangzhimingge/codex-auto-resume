@@ -44,7 +44,7 @@ class RegisterTests(unittest.TestCase):
             self.assertIn(first["status"], ACTIVE_STATES)
             self.assertTrue(Path(first["checkpoint_path"]).exists())
 
-    def test_register_rejects_non_git_and_invalid_uuid(self):
+    def test_register_rejects_invalid_uuid_before_workspace_resolution(self):
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(ValueError):
                 register_job("bad", Path(tmp), "目标", Path(tmp) / "home", start_watchdog=False)
@@ -146,7 +146,7 @@ class RegisterTests(unittest.TestCase):
             self.assertTrue(all(not thread_obj.is_alive() for thread_obj in threads))
             self.assertEqual("SUPERSEDED", load_job(old_path)["status"])
 
-    def test_v2_job_migrates_to_v3_without_changing_job_id(self):
+    def test_v2_job_migrates_to_v4_without_changing_job_id(self):
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp) / "project"
             project.mkdir()
@@ -167,10 +167,12 @@ class RegisterTests(unittest.TestCase):
             path.write_text(json.dumps(raw), encoding="utf-8")
             from auto_resume.state import load_job
             migrated = load_job(path)
-            self.assertEqual(3, migrated["schema_version"])
+            self.assertEqual(4, migrated["schema_version"])
             self.assertEqual(raw["job_id"], migrated["job_id"])
             self.assertEqual(thread_id, migrated["task_id"])
             self.assertEqual(thread_id, migrated["root_thread_id"])
+            self.assertEqual("git", migrated["workspace_kind"])
+            self.assertEqual(migrated["project_root"], migrated["workspace_root"])
 
     def test_start_watchdog_detaches_run_command_and_saves_pid(self):
         with tempfile.TemporaryDirectory() as tmp:
