@@ -13,7 +13,7 @@ from pathlib import Path
 from .services import file_digest, service_adapter
 
 PRODUCT = "io.github.shangzhimingge.codex-auto-resume"
-VERSION = "1.5.0"
+VERSION = "1.5.1"
 BEGIN = "<!-- BEGIN CODEX-AUTO-RESUME MANAGED BLOCK -->"
 END = "<!-- END CODEX-AUTO-RESUME MANAGED BLOCK -->"
 MANIFEST_SCHEMA = 1

@@ -290,11 +290,20 @@ def run_daemon(codex_home=None, interval=10, once=False, sleep=time.sleep, sessi
             signal.signal(getattr(signal, name), request_stop)
     with FileLock(layout["state"] / "daemon.lock"):
         nonce = uuid.uuid4().hex
+        pid = os.getpid()
+        identity = process_identity(pid)
+        atomic_write_json(daemon_state_path(codex_home), {
+            "pid": pid,
+            "process_identity": identity,
+            "nonce": nonce,
+            "heartbeat_at": time.time(),
+            "last_scan": None,
+        })
         while True:
             result = scan_once(codex_home, sessions_root=sessions_root)
             atomic_write_json(daemon_state_path(codex_home), {
-                "pid": os.getpid(),
-                "process_identity": process_identity(os.getpid()),
+                "pid": pid,
+                "process_identity": identity,
                 "nonce": nonce,
                 "heartbeat_at": time.time(),
                 "last_scan": result,

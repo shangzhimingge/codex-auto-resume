@@ -1,8 +1,10 @@
 import os
+import json
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import uuid
 from pathlib import Path
@@ -13,9 +15,71 @@ SCRIPTS = ROOT / "skill" / "codex-auto-resume" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 from auto_resume import activation, daemon, registering
+from auto_resume.processes import process_identity
+from auto_resume.state import ensure_runtime_layout, load_json
 
 
 class OnDemandDaemonTests(unittest.TestCase):
+    def test_daemon_publishes_verified_identity_before_the_first_scan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            layout = ensure_runtime_layout(home)
+            state_path = layout["state"] / "daemon-state.json"
+            state_path.write_text(json.dumps({
+                "pid": 999999, "process_identity": "gone", "nonce": "stale",
+                "heartbeat_at": time.time() - 3600,
+            }), encoding="utf-8")
+            result = {"examined": 0, "started": 0, "live": 0, "skipped": 0,
+                      "errors": [], "discovered": 0, "registered": 0,
+                      "reconciled": 0, "ignored": 0, "deferred": 0,
+                      "discovery_errors": []}
+
+            def inspect_initial_heartbeat(*_args, **_kwargs):
+                initial = load_json(state_path)
+                self.assertEqual(os.getpid(), initial["pid"])
+                self.assertEqual(process_identity(os.getpid()),
+                                 initial["process_identity"])
+                self.assertNotEqual("stale", initial["nonce"])
+                self.assertIsNone(initial["last_scan"])
+                return result
+
+            with mock.patch.object(daemon, "scan_once",
+                                   side_effect=inspect_initial_heartbeat):
+                self.assertEqual(result, daemon.run_daemon(home, once=True))
+
+    def test_daemon_run_recovers_permission_shaped_stale_lock_and_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            layout = ensure_runtime_layout(home)
+            lock = layout["state"] / "daemon.lock"
+            state = layout["state"] / "daemon-state.json"
+            stale = {"pid": 999999, "process_identity": "gone", "nonce": "old",
+                     "heartbeat_at": time.time() - 3600}
+            lock.write_text(json.dumps(stale), encoding="utf-8")
+            state.write_text(json.dumps(stale), encoding="utf-8")
+            real_open = os.open
+            injected = {"done": False}
+
+            def permission_once(path, flags, *args, **kwargs):
+                if Path(path) == lock and not injected["done"]:
+                    injected["done"] = True
+                    raise PermissionError("Windows existing-lock shape")
+                return real_open(path, flags, *args, **kwargs)
+
+            scan = {"examined": 0, "started": 0, "live": 0, "skipped": 0,
+                    "errors": [], "discovered": 0, "registered": 0,
+                    "reconciled": 0, "ignored": 0, "deferred": 0,
+                    "discovery_errors": []}
+            with mock.patch("auto_resume.state.os.open", side_effect=permission_once), \
+                    mock.patch.object(daemon, "scan_once", return_value=scan):
+                self.assertEqual(scan, daemon.run_daemon(home, once=True))
+            current = load_json(state)
+            self.assertTrue(injected["done"])
+            self.assertEqual(os.getpid(), current["pid"])
+            self.assertEqual(process_identity(os.getpid()), current["process_identity"])
+            self.assertNotEqual("old", current["nonce"])
+            self.assertFalse(lock.exists())
+
     def test_qualified_preflight_starts_daemon_for_registered_and_reused_jobs(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {}, clear=True), \
                 mock.patch.object(activation, "resolve_current_task", return_value=None), \

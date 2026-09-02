@@ -1,3 +1,3 @@
 """Transactional installer for Codex Auto Resume."""
 
-__version__ = "1.5.0"
+__version__ = "1.5.1"

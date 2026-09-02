@@ -1,13 +1,13 @@
 import json
 import os
 import queue
-import signal
 import subprocess
 import threading
 import time
 import uuid
 
 from .limits import _normalize_command
+from .processes import terminate_process_tree
 
 
 class ResumeError(RuntimeError):
@@ -58,28 +58,8 @@ def validate_thread_id(thread_id):
 
 
 def _terminate_process_tree(proc):
-    if proc.poll() is not None:
-        return
-    if os.name == "nt":
-        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                       timeout=5, shell=False, check=False)
-    else:
-        try:
-            os.killpg(proc.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-    try:
-        proc.wait(timeout=0.5)
-    except subprocess.TimeoutExpired:
-        if os.name != "nt":
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        else:
-            proc.kill()
-        proc.wait(timeout=1)
+    """Compatibility wrapper for existing imports and tests."""
+    return terminate_process_tree(proc)
 
 
 def resume_thread(codex_command, thread_id, prompt, project, env=None,

@@ -1,3 +1,11 @@
+# 1.5.1
+
+- Launches the rate-limit app-server in a hidden Windows process group or a new POSIX session without inheriting terminal handles.
+- Reaps the complete app-server process tree and closes all pipes and reader threads after success, malformed responses, timeouts, or communication failures.
+- Centralizes process-tree termination for probes, resume workers, watchdogs, and daemon startup cleanup.
+- Recovers permission-shaped stale lock files only after PID and process-identity verification plus compare-before-unlink; live locks and genuine permission failures remain intact.
+- Publishes the daemon PID, process identity, and heartbeat immediately after acquiring its instance lock, before a potentially slow first scan can consume the startup-handshake window.
+
 # 1.5.0
 
 - Preflights every root and subagent turn, including questions and non-Git tasks.

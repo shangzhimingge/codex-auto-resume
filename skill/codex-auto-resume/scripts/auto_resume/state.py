@@ -254,6 +254,19 @@ class FileLock:
                 if time.monotonic() >= deadline:
                     raise RuntimeError(f"job is already locked: {self.path}") from exc
                 time.sleep(self.poll_interval)
+            except PermissionError as exc:
+                # Windows can report an existing locked file as access denied.
+                # Only enter stale-owner recovery when the file itself remains
+                # readable; creation/ACL failures keep their PermissionError.
+                try:
+                    self.path.read_bytes()
+                except OSError:
+                    raise exc
+                if self._recover_proven_stale():
+                    continue
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(f"job is already locked: {self.path}") from exc
+                time.sleep(self.poll_interval)
         owner = {
             "pid": os.getpid(),
             "process_identity": process_identity(os.getpid()),

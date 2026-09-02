@@ -1,7 +1,10 @@
 import os
+import io
 import json
+import subprocess
 import sys
 import tempfile
+import time
 import types
 import unittest
 from pathlib import Path
@@ -12,6 +15,7 @@ SCRIPTS = ROOT / "skill" / "codex-auto-resume" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 from auto_resume.limits import LimitsError, read_limits, reset_deadline, _normalize_command
+from auto_resume.processes import process_identity, process_is_running
 
 
 class LimitsTests(unittest.TestCase):
@@ -78,6 +82,93 @@ class LimitsTests(unittest.TestCase):
         self.assertEqual(1, messages[0]["id"])
         self.assertNotIn("id", messages[1])
         self.assertEqual(2, messages[2]["id"])
+
+    def test_windows_probe_is_hidden_detached_from_terminal_and_always_cleaned(self):
+        responses = io.StringIO(
+            '{"id":1,"result":{"userAgent":"fake"}}\n'
+            '{"id":2,"result":{"rateLimits":{"primary":{"usedPercent":0,"resetsAt":null}}}}\n'
+        )
+        process = mock.Mock(pid=123, stdin=io.StringIO(), stdout=responses,
+                            stderr=io.StringIO())
+        popen = mock.Mock(return_value=process)
+        with mock.patch("auto_resume.limits.os", types.SimpleNamespace(name="nt")), \
+             mock.patch("auto_resume.limits.subprocess.Popen", popen), \
+             mock.patch("auto_resume.limits.terminate_process_tree") as terminate:
+            snapshot = read_limits(("codex.exe",), timeout=1)
+        self.assertEqual("legacy", snapshot.limit_id)
+        kwargs = popen.call_args.kwargs
+        expected = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+        self.assertEqual(expected, kwargs["creationflags"])
+        self.assertFalse(kwargs["shell"])
+        self.assertTrue(kwargs["close_fds"])
+        self.assertIs(subprocess.PIPE, kwargs["stdin"])
+        self.assertIs(subprocess.PIPE, kwargs["stdout"])
+        self.assertIs(subprocess.PIPE, kwargs["stderr"])
+        terminate.assert_called_once_with(process)
+        self.assertTrue(all(stream.closed for stream in
+                            (process.stdin, process.stdout, process.stderr)))
+
+    def test_popen_failure_is_wrapped_without_cleanup_of_an_unstarted_process(self):
+        with mock.patch("auto_resume.limits.subprocess.Popen", side_effect=OSError("boom")), \
+             mock.patch("auto_resume.limits.terminate_process_tree") as terminate:
+            with self.assertRaisesRegex(LimitsError, "failed to start"):
+                read_limits(("codex",), timeout=1)
+        terminate.assert_not_called()
+
+    def test_success_malformed_and_timeout_reap_the_entire_fixture_tree(self):
+        value = '{"rateLimits":{"primary":{"usedPercent":0,"resetsAt":null}}}'
+        for mode in ("success", "malformed", "hang"):
+            with self.subTest(mode=mode):
+                record = Path(self._tmp.name) / f"{mode}-processes.json"
+                env = {
+                    "FAKE_LIMITS": value,
+                    "FAKE_APP_SERVER_MODE": mode,
+                    "FAKE_APP_SERVER_PROCESS_RECORD": str(record),
+                    "FAKE_AUTO_RESUME_SCRIPTS": str(SCRIPTS),
+                }
+                error = None
+                try:
+                    with mock.patch.dict(os.environ, env, clear=False):
+                        if mode == "success":
+                            read_limits(self.command, timeout=1)
+                        else:
+                            with self.assertRaises(LimitsError):
+                                read_limits(self.command, timeout=0.2)
+                except BaseException as exc:
+                    error = exc
+                finally:
+                    deadline = time.monotonic() + 3
+                    while not record.exists() and time.monotonic() < deadline:
+                        time.sleep(0.02)
+                    records = json.loads(record.read_text(encoding="utf-8")) if record.exists() else []
+                    leftovers = [item for item in records
+                                 if process_is_running(item["pid"], item.get("identity"))]
+                    for item in leftovers:
+                        self._force_cleanup(item["pid"], item.get("identity"))
+                if error is not None:
+                    raise error
+                self.assertEqual(2, len(records), records)
+                self.assertEqual([], leftovers, records)
+
+    def _force_cleanup(self, pid, identity):
+        if not process_is_running(pid, identity):
+            return
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, close_fds=True, shell=False,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                timeout=5, check=False,
+            )
+        else:
+            try:
+                os.kill(pid, 9)
+            except ProcessLookupError:
+                pass
+        deadline = time.monotonic() + 3
+        while process_is_running(pid, identity) and time.monotonic() < deadline:
+            time.sleep(0.02)
 
     def setUp(self):
         super().setUp()

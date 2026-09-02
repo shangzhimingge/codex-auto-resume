@@ -12,6 +12,26 @@ def emit(value):
 
 
 def app_server():
+    child = None
+    process_record = os.environ.get("FAKE_APP_SERVER_PROCESS_RECORD")
+    if process_record:
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(120)"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, close_fds=True, shell=False,
+        )
+        scripts = os.environ.get("FAKE_AUTO_RESUME_SCRIPTS")
+        if scripts:
+            sys.path.insert(0, scripts)
+            from auto_resume.processes import process_identity
+            records = [
+                {"pid": os.getpid(), "identity": process_identity(os.getpid())},
+                {"pid": child.pid, "identity": process_identity(child.pid)},
+            ]
+        else:
+            records = [{"pid": os.getpid()}, {"pid": child.pid}]
+        with open(process_record, "w", encoding="utf-8") as handle:
+            json.dump(records, handle)
     messages = []
     for line in sys.stdin:
         message = json.loads(line)
@@ -24,6 +44,13 @@ def app_server():
         if method == "initialize":
             emit({"id": message["id"], "result": {"userAgent": "fake"}})
         elif method == "account/rateLimits/read":
+            mode = os.environ.get("FAKE_APP_SERVER_MODE", "success")
+            if mode == "hang":
+                time.sleep(120)
+                continue
+            if mode == "malformed":
+                print("{malformed", flush=True)
+                continue
             raw = os.environ.get("FAKE_LIMITS", '{"rateLimits":null}')
             result = json.loads(raw)
             emit({"id": message["id"], "result": result})

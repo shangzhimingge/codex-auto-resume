@@ -16,7 +16,7 @@ preflight 与 daemon 共用每任务 startup lock，并在锁内重检持久 wat
 
 [English](./README.md)
 
-![Version](https://img.shields.io/badge/version-v1.5.0-2563eb)
+![Version](https://img.shields.io/badge/version-v1.5.1-2563eb)
 ![License](https://img.shields.io/badge/license-MIT-16a34a)
 ![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-111827)
 
@@ -53,6 +53,10 @@ npx -y github:shangzhimingge/codex-auto-resume uninstall --purge-data
 Windows 使用 `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`；macOS 与 Linux 使用新会话。daemon 的标准输入输出均指向空设备，并固定 `shell=False`。跳过或 opt-out 的预检不启动 daemon；`--no-start` 同时禁止 watchdog 与 daemon。自动恢复产生的 turn 会先归并回既有 job，再检查 daemon，因此不会通过 daemon 发现路径递归启动。
 
 安装和升级会幂等清理旧版 Windows 任务计划/“启动”目录、macOS launchd 与 Linux systemd 用户自启项；卸载复用同一清理逻辑。首次合格任务前 daemon 处于未运行状态，`doctor` 将其视为正常。
+
+## 限额探测子进程安全
+
+限额探测在 Windows 使用 `CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP`，在 macOS/Linux 使用新会话，且不继承终端句柄。无论探测成功、响应畸形、超时，还是启动或通信失败，都会清理完整 app-server 进程树、关闭管道并等待读取线程结束。陈旧锁仅在 PID 与进程创建身份确认失效且 compare-before-unlink 校验通过后自愈；仍存活的锁所有者与真实权限错误会保持原状。daemon 获取 `daemon.lock` 后会在首次扫描前立即发布已验证的 PID、身份与初始心跳，避免大型运行状态耗尽启动握手窗口。
 
 ## 事务与所有权安全
 

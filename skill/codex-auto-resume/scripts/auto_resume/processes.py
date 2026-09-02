@@ -1,5 +1,6 @@
 import ctypes
 import os
+import signal
 import subprocess
 from pathlib import Path
 
@@ -96,3 +97,44 @@ def process_is_running(pid, expected_identity=None):
     if not running:
         return False
     return expected_identity is None or process_identity(pid) == expected_identity
+
+
+def terminate_process_tree(proc, term_timeout=0.5, kill_timeout=2):
+    """Best-effort termination of a process and every descendant it launched."""
+    pid = getattr(proc, "pid", None)
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        return
+    if os.name == "nt":
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, close_fds=True, shell=False,
+                creationflags=flags, timeout=5, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    else:
+        try:
+            os.killpg(pid, getattr(signal, "SIGTERM", 15))
+        except (ProcessLookupError, PermissionError):
+            pass
+    try:
+        proc.wait(timeout=term_timeout)
+        return
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    if os.name != "nt":
+        try:
+            os.killpg(pid, getattr(signal, "SIGKILL", 9))
+        except (ProcessLookupError, PermissionError):
+            pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+    try:
+        proc.wait(timeout=kill_timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        pass

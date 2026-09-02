@@ -25,7 +25,10 @@ class WatchdogSafetyTests(unittest.TestCase):
         identity = process_identity(pid)
         if os.name == "nt":
             subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, close_fds=True, shell=False,
+                           creationflags=subprocess.CREATE_NO_WINDOW, timeout=5,
+                           check=False)
         else:
             try:
                 os.kill(pid, signal.SIGTERM)
@@ -40,6 +43,11 @@ class WatchdogSafetyTests(unittest.TestCase):
                 os.kill(pid, force_signal)
             except ProcessLookupError:
                 pass
+        deadline = time.monotonic() + 3
+        while process_is_running(pid, identity) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertFalse(process_is_running(pid, identity),
+                         f"test process survived cleanup: pid={pid} identity={identity}")
 
     def make_repo(self, path):
         subprocess.run(["git", "init", "-q"], cwd=path, check=True)
@@ -104,6 +112,37 @@ class WatchdogSafetyTests(unittest.TestCase):
             with FileLock(lock, timeout=1):
                 self.assertTrue(lock.exists())
             self.assertFalse(lock.exists())
+
+    def test_permission_shaped_stale_lock_is_recovered_only_after_identity_check(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lock = Path(tmp) / "stale.lock"
+            lock.write_text(json.dumps({
+                "pid": 999999, "process_identity": "gone", "nonce": "old",
+            }), encoding="utf-8")
+            real_open = os.open
+            injected = {"done": False}
+
+            def permission_once(path, flags, *args, **kwargs):
+                if Path(path) == lock and not injected["done"]:
+                    injected["done"] = True
+                    raise PermissionError("Windows existing-lock shape")
+                return real_open(path, flags, *args, **kwargs)
+
+            with mock.patch("auto_resume.state.os.open", side_effect=permission_once):
+                with FileLock(lock, timeout=1):
+                    self.assertTrue(lock.exists())
+            self.assertTrue(injected["done"])
+            self.assertFalse(lock.exists())
+
+    def test_permission_denied_without_a_readable_lock_is_never_unlinked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lock = Path(tmp) / "not-created.lock"
+            with mock.patch("auto_resume.state.os.open", side_effect=PermissionError("denied")), \
+                    mock.patch.object(Path, "unlink") as unlink:
+                with self.assertRaises(PermissionError):
+                    with FileLock(lock, timeout=0.1):
+                        pass
+            unlink.assert_not_called()
 
     def test_concurrent_live_lock_owner_is_preserved(self):
         with tempfile.TemporaryDirectory() as tmp:

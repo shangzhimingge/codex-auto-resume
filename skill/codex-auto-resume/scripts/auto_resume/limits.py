@@ -6,6 +6,7 @@ import threading
 from pathlib import Path
 
 from . import __version__
+from .processes import terminate_process_tree
 
 
 class LimitsError(RuntimeError):
@@ -35,9 +36,18 @@ def _normalize_command(codex_command):
     return command
 
 
-def _readline_with_timeout(stream, timeout):
+def _readline_with_timeout(stream, timeout, workers=None):
     box = []
-    worker = threading.Thread(target=lambda: box.append(stream.readline()), daemon=True)
+
+    def read_one():
+        try:
+            box.append(stream.readline())
+        except (OSError, ValueError):
+            box.append("")
+
+    worker = threading.Thread(target=read_one, daemon=True)
+    if workers is not None:
+        workers.append(worker)
     worker.start()
     worker.join(timeout)
     if worker.is_alive() or not box or not box[0]:
@@ -45,13 +55,13 @@ def _readline_with_timeout(stream, timeout):
     return box[0]
 
 
-def _request(proc, message, timeout):
+def _request(proc, message, timeout, workers=None):
     proc.stdin.write(json.dumps(message) + "\n")
     proc.stdin.flush()
     expected = message.get("id")
     while True:
         try:
-            response = json.loads(_readline_with_timeout(proc.stdout, timeout))
+            response = json.loads(_readline_with_timeout(proc.stdout, timeout, workers))
         except (ValueError, json.JSONDecodeError) as exc:
             raise LimitsError("malformed app-server JSON") from exc
         if response.get("id") == expected:
@@ -62,30 +72,45 @@ def _request(proc, message, timeout):
 
 def read_limits(codex_command=("codex",), timeout=15):
     argv = [*_normalize_command(codex_command), "app-server", "--listen", "stdio://"]
-    proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, text=True, encoding="utf-8",
-                            errors="replace", shell=False)
+    proc = None
+    workers = []
     try:
+        process_options = {"close_fds": True, "shell": False}
+        if os.name == "nt":
+            process_options["creationflags"] = (
+                getattr(subprocess, "CREATE_NO_WINDOW", 0) |
+                getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            )
+        else:
+            process_options["start_new_session"] = True
+        proc = subprocess.Popen(
+            argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, encoding="utf-8",
+            errors="replace", **process_options,
+        )
         init = {"method": "initialize", "id": 1, "params": {
             "clientInfo": {"name": "codex-auto-resume", "title": "Codex Auto Resume", "version": __version__},
             "capabilities": {"experimentalApi": True},
         }}
-        _request(proc, init, timeout)
+        _request(proc, init, timeout, workers)
         proc.stdin.write(json.dumps({"method": "initialized", "params": {}}) + "\n")
         proc.stdin.flush()
-        result = _request(proc, {"method": "account/rateLimits/read", "id": 2}, timeout)
+        result = _request(proc, {"method": "account/rateLimits/read", "id": 2}, timeout,
+                          workers)
     except (OSError, BrokenPipeError) as exc:
-        raise LimitsError(f"app-server communication failed: {exc}") from exc
+        action = "failed to start" if proc is None else "communication failed"
+        raise LimitsError(f"app-server {action}: {exc}") from exc
     finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=2)
-        for stream in (proc.stdin, proc.stdout, proc.stderr):
-            if stream is not None:
-                stream.close()
+        if proc is not None:
+            terminate_process_tree(proc)
+            for stream in (proc.stdin, proc.stdout, proc.stderr):
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except OSError:
+                        pass
+            for worker in workers:
+                worker.join(timeout=2)
     if not isinstance(result, dict):
         raise LimitsError("missing rate-limit result")
     by_id = result.get("rateLimitsByLimitId")
