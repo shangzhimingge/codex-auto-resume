@@ -5,10 +5,12 @@ import tempfile
 import time
 import uuid
 from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass
+from enum import Enum
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .processes import process_identity, process_is_running
+from .processes import process_identity, process_owner_state
 
 STATUSES = {
     "REGISTERED", "RUNNING", "WAITING_RESET", "RESUMING", "DONE",
@@ -234,59 +236,315 @@ def save_job(path, job, migrate=True):
     atomic_write_json(path, job)
 
 
+class OwnerState(Enum):
+    ABSENT = "absent"
+    LIVE_MATCH = "live_match"
+    UNKNOWN_OR_IDENTITY_MISMATCH = "unknown_or_identity_mismatch"
+
+
+class RecoveryState(Enum):
+    RETRY_NOW = "retry_now"
+    CONTENDED = "contended"
+    INACCESSIBLE = "inaccessible"
+
+
+@dataclass(frozen=True)
+class LockSnapshot:
+    content: bytes
+    identity: tuple
+
+
+class _GateTimeout(RuntimeError):
+    pass
+
+
+class _AcquisitionGate:
+    """Process-scoped serialization for stale-check/delete/recreate transitions."""
+
+    def __init__(self, path, deadline, poll_interval):
+        self.path = Path(path).resolve()
+        self.deadline = deadline
+        self.poll_interval = poll_interval
+        self.handle = None
+        self.kernel32 = None
+        self.fd = None
+
+    def __enter__(self):
+        if os.name == "nt":
+            import ctypes
+            from ctypes import wintypes
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.CreateMutexW.argtypes = (ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR)
+            kernel32.CreateMutexW.restype = wintypes.HANDLE
+            kernel32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+            kernel32.WaitForSingleObject.restype = wintypes.DWORD
+            kernel32.ReleaseMutex.argtypes = (wintypes.HANDLE,)
+            kernel32.ReleaseMutex.restype = wintypes.BOOL
+            kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+            kernel32.CloseHandle.restype = wintypes.BOOL
+            canonical = os.path.normcase(str(self.path))
+            digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+            name = f"Local\\CodexAutoResumeFileLock-{digest}"
+            handle = kernel32.CreateMutexW(None, False, name)
+            if not handle:
+                raise ctypes.WinError(ctypes.get_last_error())
+            self.handle = handle
+            self.kernel32 = kernel32
+            remaining = max(0.0, self.deadline - time.monotonic())
+            milliseconds = min(0xFFFFFFFE, int(remaining * 1000))
+            if remaining > 0 and milliseconds == 0:
+                milliseconds = 1
+            outcome = kernel32.WaitForSingleObject(handle, milliseconds)
+            if outcome not in (0x00000000, 0x00000080):
+                kernel32.CloseHandle(handle)
+                self.handle = None
+                self.kernel32 = None
+                if outcome == 0x00000102:
+                    raise _GateTimeout(f"lock acquisition gate is busy: {self.path}")
+                raise ctypes.WinError(ctypes.get_last_error())
+            return self
+
+        import fcntl
+
+        gate_path = self.path.with_name(f".{self.path.name}.acquire")
+        self.fd = os.open(gate_path, os.O_CREAT | os.O_RDWR, 0o600)
+        while True:
+            try:
+                fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return self
+            except BlockingIOError:
+                if time.monotonic() >= self.deadline:
+                    os.close(self.fd)
+                    self.fd = None
+                    raise _GateTimeout(f"lock acquisition gate is busy: {self.path}")
+                time.sleep(self.poll_interval)
+            except BaseException:
+                os.close(self.fd)
+                self.fd = None
+                raise
+
+    def __exit__(self, *_):
+        if os.name == "nt":
+            import ctypes
+
+            kernel32 = self.kernel32
+            try:
+                if self.handle and not kernel32.ReleaseMutex(self.handle):
+                    raise ctypes.WinError(ctypes.get_last_error())
+            finally:
+                if self.handle:
+                    kernel32.CloseHandle(self.handle)
+                    self.handle = None
+                    self.kernel32 = None
+            return
+
+        import fcntl
+
+        if self.fd is not None:
+            try:
+                fcntl.flock(self.fd, fcntl.LOCK_UN)
+            finally:
+                os.close(self.fd)
+                self.fd = None
+
+
 class FileLock:
     def __init__(self, path, timeout=0, poll_interval=0.05):
         self.path = Path(path)
         self.fd = None
         self.timeout = timeout
         self.poll_interval = poll_interval
+        self._owner_snapshot = None
 
     def __enter__(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         deadline = time.monotonic() + self.timeout
         while True:
             try:
-                self.fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                break
-            except FileExistsError as exc:
-                if self._recover_proven_stale():
-                    continue
+                with _AcquisitionGate(self.path, deadline, self.poll_interval):
+                    outcome, original = self._acquire_under_gate(deadline)
+            except _GateTimeout as exc:
+                raise RuntimeError(f"job is already locked: {self.path}") from exc
+            if outcome is RecoveryState.CONTENDED:
                 if time.monotonic() >= deadline:
-                    raise RuntimeError(f"job is already locked: {self.path}") from exc
+                    raise RuntimeError(f"job is already locked: {self.path}") from original
                 time.sleep(self.poll_interval)
-            except PermissionError as exc:
-                # Windows can report an existing locked file as access denied.
-                # Only enter stale-owner recovery when the file itself remains
-                # readable; creation/ACL failures keep their PermissionError.
-                try:
-                    self.path.read_bytes()
-                except FileNotFoundError:
-                    continue
-                except OSError:
-                    raise exc
-                if self._recover_proven_stale():
-                    continue
-                if time.monotonic() >= deadline:
-                    raise RuntimeError(f"job is already locked: {self.path}") from exc
-                time.sleep(self.poll_interval)
-        owner = {
-            "pid": os.getpid(),
-            "process_identity": process_identity(os.getpid()),
-            "nonce": uuid.uuid4().hex,
-            "created_at": time.time(),
-        }
-        try:
-            os.write(self.fd, json.dumps(owner).encode("utf-8"))
-        except BaseException:
-            os.close(self.fd)
-            self.fd = None
-            self._unlink_with_retry()
-            raise
-        return self
+                continue
+            if outcome is RecoveryState.INACCESSIBLE:
+                raise original
+            return self
 
-    def _unlink_with_retry(self):
-        deadline = time.monotonic() + max(1.0, self.poll_interval * 4)
+    def _create_lock_file(self):
+        return os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+
+    def _acquire_under_gate(self, deadline):
+        permission_retries = 0
         while True:
+            try:
+                self.fd = self._create_lock_file()
+            except (FileExistsError, PermissionError) as exc:
+                if isinstance(exc, PermissionError):
+                    probe_state, _, probe_error = self._read_snapshot()
+                    if probe_state is RecoveryState.RETRY_NOW:
+                        recovery = RecoveryState.RETRY_NOW
+                        recovery_error = exc
+                    elif probe_state is RecoveryState.INACCESSIBLE:
+                        return RecoveryState.INACCESSIBLE, probe_error or exc
+                    else:
+                        recovery, recovery_error = self._recover_proven_stale(deadline)
+                else:
+                    recovery, recovery_error = self._recover_proven_stale(deadline)
+
+                if recovery is RecoveryState.RETRY_NOW:
+                    # FileExists plus disappearance always retries under the gate,
+                    # even at timeout=0. Repeated PermissionError with no file is
+                    # creation/ACL uncertainty and fails closed at the deadline.
+                    if isinstance(exc, PermissionError):
+                        permission_retries += 1
+                        if permission_retries > 1 and time.monotonic() >= deadline:
+                            return RecoveryState.INACCESSIBLE, exc
+                    continue
+                return recovery, recovery_error or exc
+
+            created_identity = self._stat_identity(os.fstat(self.fd))
+            owner = {
+                "pid": os.getpid(),
+                "process_identity": process_identity(os.getpid()),
+                "nonce": uuid.uuid4().hex,
+                "created_at": time.time(),
+            }
+            owner_bytes = json.dumps(owner).encode("utf-8")
+            try:
+                os.write(self.fd, owner_bytes)
+                os.fsync(self.fd)
+                stat = os.fstat(self.fd)
+                self._owner_snapshot = LockSnapshot(owner_bytes, self._stat_identity(stat))
+            except BaseException:
+                os.close(self.fd)
+                self.fd = None
+                self._remove_owned_after_failed_write(created_identity)
+                raise
+            return None, None
+
+    @staticmethod
+    def _stat_identity(stat):
+        # st_ctime can change after the writer handle closes on Windows; the
+        # volume/file index pair is the stable file-object identity.
+        return (stat.st_dev, stat.st_ino)
+
+    def _read_snapshot(self):
+        try:
+            with self.path.open("rb") as handle:
+                content = handle.read()
+                handle_identity = self._stat_identity(os.fstat(handle.fileno()))
+            path_identity = self._stat_identity(self.path.stat())
+        except FileNotFoundError as exc:
+            return RecoveryState.RETRY_NOW, None, exc
+        except OSError as exc:
+            return RecoveryState.INACCESSIBLE, None, exc
+        if handle_identity != path_identity:
+            return RecoveryState.CONTENDED, None, None
+        return None, LockSnapshot(content, handle_identity), None
+
+    def _owner_state(self, snapshot):
+        before = snapshot.content
+        try:
+            owner = json.loads(before.decode("utf-8"))
+            pid = owner.get("pid")
+            identity = owner.get("process_identity")
+            if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+                return OwnerState.UNKNOWN_OR_IDENTITY_MISMATCH
+            if not isinstance(identity, str) or not identity:
+                return OwnerState.UNKNOWN_OR_IDENTITY_MISMATCH
+            try:
+                state = process_owner_state(pid, identity)
+            except BaseException:
+                return OwnerState.UNKNOWN_OR_IDENTITY_MISMATCH
+        except (ValueError, UnicodeDecodeError, AttributeError):
+            try:
+                pid = int(before.decode("ascii"))
+            except (ValueError, UnicodeDecodeError):
+                return OwnerState.UNKNOWN_OR_IDENTITY_MISMATCH
+            try:
+                state = process_owner_state(pid, None)
+            except BaseException:
+                return OwnerState.UNKNOWN_OR_IDENTITY_MISMATCH
+        try:
+            return OwnerState(state)
+        except (ValueError, TypeError):
+            return OwnerState.UNKNOWN_OR_IDENTITY_MISMATCH
+
+    def _recover_proven_stale(self, deadline):
+        first_state, before, first_error = self._read_snapshot()
+        if first_state is not None:
+            return first_state, first_error
+        owner_state = self._owner_state(before)
+        if owner_state is OwnerState.LIVE_MATCH:
+            return RecoveryState.CONTENDED, None
+        if owner_state is OwnerState.UNKNOWN_OR_IDENTITY_MISMATCH:
+            return RecoveryState.CONTENDED, None
+
+        # Two fresh content+identity checks make replacement before unlink
+        # visible. Cooperating FileLock participants cannot enter this section
+        # concurrently because the acquisition gate is held.
+        comparisons = 0
+        while True:
+            compare_state, current, compare_error = self._read_snapshot()
+            if compare_state is not None:
+                return compare_state, compare_error
+            if current != before:
+                return RecoveryState.CONTENDED, None
+            comparisons += 1
+            if comparisons < 2:
+                continue
+            try:
+                self.path.unlink()
+                return RecoveryState.RETRY_NOW, None
+            except FileNotFoundError as exc:
+                return RecoveryState.RETRY_NOW, exc
+            except PermissionError as exc:
+                # An exited Windows process can briefly retain a sharing lock.
+                # Recheck the exact file object before every retry; ACL failures
+                # remain inaccessible when the caller's deadline expires.
+                if time.monotonic() >= deadline:
+                    return RecoveryState.INACCESSIBLE, exc
+                time.sleep(self.poll_interval)
+            except OSError as exc:
+                return RecoveryState.INACCESSIBLE, exc
+
+    def _remove_owned_after_failed_write(self, created_identity):
+        try:
+            state, snapshot, _ = self._read_snapshot()
+            if state is None and snapshot.identity == created_identity:
+                self.path.unlink()
+        except OSError:
+            pass
+
+    def _unlink_with_retry(self, expected_snapshot=None):
+        deadline = time.monotonic() + max(1.0, self.poll_interval * 4)
+        if expected_snapshot is None:
+            while True:
+                try:
+                    self.path.unlink()
+                    return
+                except FileNotFoundError:
+                    return
+                except PermissionError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(self.poll_interval)
+        while True:
+            state, current, error = self._read_snapshot()
+            if state is RecoveryState.RETRY_NOW:
+                return
+            if state is RecoveryState.INACCESSIBLE:
+                if time.monotonic() >= deadline:
+                    raise error
+                time.sleep(self.poll_interval)
+                continue
+            if expected_snapshot is not None and current != expected_snapshot:
+                return
             try:
                 self.path.unlink()
                 return
@@ -297,38 +555,11 @@ class FileLock:
                     raise
                 time.sleep(self.poll_interval)
 
-    def _recover_proven_stale(self):
-        try:
-            before = self.path.read_bytes()
-        except OSError:
-            return False
-        try:
-            owner = json.loads(before.decode("utf-8"))
-            pid = owner.get("pid")
-            identity = owner.get("process_identity")
-            if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
-                return False
-            if identity is not None and not isinstance(identity, str):
-                return False
-            stale = not process_is_running(pid, identity)
-        except (ValueError, UnicodeDecodeError, AttributeError):
-            try:
-                pid = int(before.decode("ascii"))
-            except (ValueError, UnicodeDecodeError):
-                return False
-            stale = not process_is_running(pid)
-        if not stale:
-            return False
-        try:
-            if self.path.read_bytes() != before:
-                return False
-            self.path.unlink()
-            return True
-        except OSError:
-            return False
-
     def __exit__(self, *_):
         if self.fd is not None:
             os.close(self.fd)
             self.fd = None
-        self._unlink_with_retry()
+        deadline = time.monotonic() + max(1.0, self.timeout, self.poll_interval * 4)
+        with _AcquisitionGate(self.path, deadline, self.poll_interval):
+            self._unlink_with_retry(self._owner_snapshot)
+        self._owner_snapshot = None

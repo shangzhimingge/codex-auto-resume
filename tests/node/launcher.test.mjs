@@ -77,7 +77,7 @@ test('no-argument launcher performs the default simulated install', () => {
   withTemporaryCodexHome('codex-auto-resume-node-', (home) => {
     const result = runLauncher(home);
     assertSucceeded(result);
-    assert.equal(fs.readFileSync(path.join(home, 'skills', 'codex-auto-resume', 'VERSION'), 'utf8').trim(), '1.5.3');
+    assert.equal(fs.readFileSync(path.join(home, 'skills', 'codex-auto-resume', 'VERSION'), 'utf8').trim(), '1.5.4');
   });
 });
 

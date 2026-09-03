@@ -16,7 +16,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from auto_resume.processes import process_identity, process_is_running
 from auto_resume.registering import launch_watchdog, WatchdogStartError
-from auto_resume.state import FileLock, load_job
+from auto_resume.state import FileLock, RecoveryState, load_job
 from auto_resume.watchdog_lease import lease_path, watchdog_lease_is_live
 
 
@@ -119,16 +119,17 @@ class WatchdogSafetyTests(unittest.TestCase):
             lock.write_text(json.dumps({
                 "pid": 999999, "process_identity": "gone", "nonce": "old",
             }), encoding="utf-8")
-            real_open = os.open
+            real_create = FileLock._create_lock_file
             injected = {"done": False}
 
-            def permission_once(path, flags, *args, **kwargs):
-                if Path(path) == lock and not injected["done"]:
+            def permission_once(guard):
+                if guard.path == lock and not injected["done"]:
                     injected["done"] = True
                     raise PermissionError("Windows existing-lock shape")
-                return real_open(path, flags, *args, **kwargs)
+                return real_create(guard)
 
-            with mock.patch("auto_resume.state.os.open", side_effect=permission_once):
+            with mock.patch.object(FileLock, "_create_lock_file", autospec=True,
+                                   side_effect=permission_once):
                 with FileLock(lock, timeout=1):
                     self.assertTrue(lock.exists())
             self.assertTrue(injected["done"])
@@ -137,8 +138,11 @@ class WatchdogSafetyTests(unittest.TestCase):
     def test_permission_denied_without_a_readable_lock_is_never_unlinked(self):
         with tempfile.TemporaryDirectory() as tmp:
             lock = Path(tmp) / "not-created.lock"
-            with mock.patch("auto_resume.state.os.open", side_effect=PermissionError("denied")), \
-                    mock.patch.object(Path, "read_bytes", side_effect=PermissionError("unreadable")), \
+            with mock.patch.object(FileLock, "_create_lock_file", autospec=True,
+                                   side_effect=PermissionError("denied")), \
+                    mock.patch.object(FileLock, "_read_snapshot",
+                                      return_value=(RecoveryState.INACCESSIBLE, None,
+                                                    PermissionError("unreadable"))), \
                     mock.patch.object(Path, "unlink") as unlink:
                 with self.assertRaises(PermissionError):
                     with FileLock(lock, timeout=0.1):

@@ -1,3 +1,10 @@
+# 1.5.4
+
+- Serializes every lock-file create, stale-owner check, removal, and immediate rebuild with a canonical path-derived Windows named Mutex or POSIX advisory lock.
+- Classifies persisted owners as absent, live with matching identity, or unknown/identity-mismatched; permission and identity uncertainty remain fail-closed.
+- Compares lock content and stable file identity before removal, retries every disappearance immediately even at zero timeout, and preserves replacements and new-owner nonces.
+- Adds deterministic coverage for every read/compare/unlink race window, competing stale recoverers, and real multi-process gate stress.
+
 # 1.5.3
 
 - Retries Windows lock acquisition when an access-denied probe races with the current owner deleting the lock.

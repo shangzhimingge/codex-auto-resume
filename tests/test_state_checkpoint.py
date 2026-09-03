@@ -54,17 +54,17 @@ class StateCheckpointTests(unittest.TestCase):
     def test_permission_shaped_lock_disappears_before_probe_retries(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "job.lock"
-            real_open = os.open
+            real_create = FileLock._create_lock_file
             attempts = []
 
-            def permission_then_open(candidate, flags, *args, **kwargs):
-                attempts.append(Path(candidate))
+            def permission_then_open(lock):
+                attempts.append(lock.path)
                 if len(attempts) == 1:
                     raise PermissionError("Windows existing-lock shape")
-                return real_open(candidate, flags, *args, **kwargs)
+                return real_create(lock)
 
-            with mock.patch("auto_resume.state.os.open", side_effect=permission_then_open), \
-                    mock.patch.object(Path, "read_bytes", side_effect=FileNotFoundError("gone")):
+            with mock.patch.object(FileLock, "_create_lock_file", autospec=True,
+                                   side_effect=permission_then_open):
                 with FileLock(path):
                     self.assertTrue(path.exists())
 

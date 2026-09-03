@@ -16,7 +16,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from auto_resume import activation, daemon, registering
 from auto_resume.processes import process_identity
-from auto_resume.state import ensure_runtime_layout, load_json
+from auto_resume.state import FileLock, ensure_runtime_layout, load_json
 
 
 class OnDemandDaemonTests(unittest.TestCase):
@@ -57,20 +57,21 @@ class OnDemandDaemonTests(unittest.TestCase):
                      "heartbeat_at": time.time() - 3600}
             lock.write_text(json.dumps(stale), encoding="utf-8")
             state.write_text(json.dumps(stale), encoding="utf-8")
-            real_open = os.open
+            real_create = FileLock._create_lock_file
             injected = {"done": False}
 
-            def permission_once(path, flags, *args, **kwargs):
-                if Path(path) == lock and not injected["done"]:
+            def permission_once(guard):
+                if guard.path == lock and not injected["done"]:
                     injected["done"] = True
                     raise PermissionError("Windows existing-lock shape")
-                return real_open(path, flags, *args, **kwargs)
+                return real_create(guard)
 
             scan = {"examined": 0, "started": 0, "live": 0, "skipped": 0,
                     "errors": [], "discovered": 0, "registered": 0,
                     "reconciled": 0, "ignored": 0, "deferred": 0,
                     "discovery_errors": []}
-            with mock.patch("auto_resume.state.os.open", side_effect=permission_once), \
+            with mock.patch.object(FileLock, "_create_lock_file", autospec=True,
+                                   side_effect=permission_once), \
                     mock.patch.object(daemon, "scan_once", return_value=scan):
                 self.assertEqual(scan, daemon.run_daemon(home, once=True))
             current = load_json(state)

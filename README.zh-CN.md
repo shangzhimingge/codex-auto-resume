@@ -16,7 +16,7 @@ preflight 与 daemon 共用每任务 startup lock，并在锁内重检持久 wat
 
 [English](./README.md)
 
-![Version](https://img.shields.io/badge/version-v1.5.3-2563eb)
+![Version](https://img.shields.io/badge/version-v1.5.4-2563eb)
 ![License](https://img.shields.io/badge/license-MIT-16a34a)
 ![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-111827)
 
@@ -56,7 +56,7 @@ Windows 使用 `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`�
 
 ## 限额探测子进程安全
 
-限额探测在 Windows 使用 `CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP`，在 macOS/Linux 使用新会话，且不继承终端句柄。Windows 探测进程会加入启用 kill-on-close 的 Job Object；若子进程在挂接前创建或 Job 分配被拒绝，则以 PID 与创建身份绑定的后代快照回退。清理严格按 Job 终止、隐藏 tree/身份安全进程终止、等待根进程及全部已捕获后代消失、最后关闭 Job 句柄的顺序执行。无论探测成功、响应畸形、超时，还是启动或通信失败，都会关闭管道并等待读取线程结束；清理错误也不会覆盖原始 RPC 错误。Windows access-denied 锁探测若在读取前发现锁已消失，会重新竞争锁而不是上报过期共享错误。陈旧锁仅在 PID 与进程创建身份确认失效且 compare-before-unlink 校验通过后自愈；仍存活的锁所有者与真实权限错误会保持原状。daemon 获取 `daemon.lock` 后会在首次扫描前立即发布已验证的 PID、身份与初始心跳，避免大型运行状态耗尽启动握手窗口。
+限额探测在 Windows 使用 `CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP`，在 macOS/Linux 使用新会话，且不继承终端句柄。Windows 探测进程会加入启用 kill-on-close 的 Job Object；若子进程在挂接前创建或 Job 分配被拒绝，则以 PID 与创建身份绑定的后代快照回退。清理严格按 Job 终止、隐藏 tree/身份安全进程终止、等待根进程及全部已捕获后代消失、最后关闭 Job 句柄的顺序执行。无论探测成功、响应畸形、超时，还是启动或通信失败，都会关闭管道并等待读取线程结束；清理错误也不会覆盖原始 RPC 错误。所有锁文件参与者都会通过按规范路径派生的 OS acquisition gate 串行执行创建、陈旧 owner 判定、清除和紧接重建：Windows 使用进程退出时自动释放的 named Mutex，POSIX 使用 advisory lock。持久 owner 只分为已消失、存活且身份匹配、未知或身份不匹配三态；权限与身份不确定性保持 fail-closed。恢复会同时快照锁内容与稳定文件身份，仅清除已确认消失且两次比较未变化的 owner；任一阶段发现锁消失时，即使 timeout 为零也立即重试，同时保留替换文件和新 owner nonce。daemon 获取 `daemon.lock` 后会在首次扫描前立即发布已验证的 PID、身份与初始心跳，避免大型运行状态耗尽启动握手窗口。
 
 ## 事务与所有权安全
 

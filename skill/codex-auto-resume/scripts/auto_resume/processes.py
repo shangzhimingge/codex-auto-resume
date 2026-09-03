@@ -185,6 +185,54 @@ def process_is_running(pid, expected_identity=None):
     return running and (expected_identity is None or identity == expected_identity)
 
 
+
+PROCESS_OWNER_ABSENT = "absent"
+PROCESS_OWNER_LIVE_MATCH = "live_match"
+PROCESS_OWNER_UNKNOWN = "unknown_or_identity_mismatch"
+
+
+def process_owner_state(pid, expected_identity=None):
+    """Classify a persisted lock owner without treating access failures as death."""
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        return PROCESS_OWNER_UNKNOWN
+    if expected_identity is not None and (not isinstance(expected_identity, str) or not expected_identity):
+        return PROCESS_OWNER_UNKNOWN
+    if os.name == "nt":
+        handle = _windows_handle(pid)
+        if not handle:
+            error = ctypes.get_last_error()
+            return PROCESS_OWNER_ABSENT if error == 87 else PROCESS_OWNER_UNKNOWN
+        try:
+            code = wintypes.DWORD()
+            if not _kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return PROCESS_OWNER_UNKNOWN
+            if code.value != 259:
+                return PROCESS_OWNER_ABSENT
+            if expected_identity is None:
+                return PROCESS_OWNER_LIVE_MATCH
+            identity = _identity_from_windows_handle(handle)
+            if identity is None or identity != expected_identity:
+                return PROCESS_OWNER_UNKNOWN
+            return PROCESS_OWNER_LIVE_MATCH
+        finally:
+            _kernel32.CloseHandle(handle)
+
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return PROCESS_OWNER_ABSENT
+    except (PermissionError, OSError):
+        return PROCESS_OWNER_UNKNOWN
+    fields = _proc_fields(pid)
+    if fields and fields[0] == "Z":
+        return PROCESS_OWNER_ABSENT
+    if expected_identity is None:
+        return PROCESS_OWNER_LIVE_MATCH
+    identity = process_identity(pid)
+    if identity is None or identity != expected_identity:
+        return PROCESS_OWNER_UNKNOWN
+    return PROCESS_OWNER_LIVE_MATCH
+
 def _process_parents():
     if not _WINDOWS_APIS_AVAILABLE:
         return {}

@@ -124,7 +124,9 @@ class SessionTaskTests(unittest.TestCase):
             path = self.write_rollout(sessions, thread, [
                 line("session_meta", {"id": thread, "cwd": str(repo)}),
                 line("event_msg", {"type": "task_started", "turn_id": "resume-race",
-                                   "started_at": time.time() + 0.01}),
+                                   # Keep launch-before-turn ordering deterministic even
+                                   # when lock acquisition performs OS-gate setup.
+                                   "started_at": time.time() + 60}),
             ])
             record_resume_launch(home, original)
             observed = []
